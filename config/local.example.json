@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "asr_model": "models/faster-whisper-small",
+  "tts_device": "mps",
+  "max_video_seconds": 1800,
+  "minimum_free_gib": 8,
+  "tts_num_beams": 1,
+  "tts_timing_mode": "preserve",
+  "tts_emotion_mode": "reference",
+  "tts_emotion_alpha": 1.0,
+  "tts_punctuation_mode": "preserve_commas",
+  "web_app": {
+    "service_mode": "authorized_user_session",
+    "login_auto_start_enabled": false,
+    "local_media_processing": true,
+    "default_tts_profile": "hybrid-gpt-preserve-25-pad-eager",
+    "audio_analysis_scheduling": "cpu_asr_and_single_mps_demucs"
+  }
+}

@@ -1,0 +1,57 @@
+{
+  "type": "portable_recipe_without_source_data",
+  "updated": "2026-10-21",
+  "video": {
+    "preserve_source_orientation": true,
+    "portrait_only_when_requested": true,
+    "target_long_edge": 960,
+    "keep_aspect_ratio": true,
+    "current_renderer_frame": [
+      960,
+      540
+    ],
+    "video_bitrate_kbps": 850,
+    "audio_bitrate_kbps": 128,
+    "max_output_bytes_exclusive": 50000000,
+    "size_budget_target_bytes": 48000000,
+    "size_policy": "mp4_under_50_decimal_mb_v1"
+  },
+  "subtitles": {
+    "burned": true,
+    "order": [
+      "zh",
+      "de"
+    ],
+    "current_renderer_font_sizes": {
+      "zh": 34,
+      "de": 24
+    }
+  },
+  "voice": {
+    "profile": "hybrid-gpt-preserve-25-pad-eager",
+    "cfm_steps": 25,
+    "seed": 42,
+    "num_beams": 1,
+    "duration_factor": 1,
+    "emotion_mode": "reference",
+    "preserve_commas": true,
+    "generation_policy": "complete sentences or meaning groups; reference must be bound to the current source speaker"
+  },
+  "editing": {
+    "complete_thought_tail_s": 0.35,
+    "derive_from_final_audio": true
+  },
+  "background": {
+    "max_gain_db": 10,
+    "title_gain_db": 4,
+    "independent_track": true
+  },
+  "logo": {
+    "width_px": 84,
+    "opacity": 0.55,
+    "position": [
+      16,
+      24
+    ]
+  }
+}

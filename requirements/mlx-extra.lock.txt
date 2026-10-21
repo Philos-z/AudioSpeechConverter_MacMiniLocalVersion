@@ -1,0 +1,12 @@
+# Observed on 2026-10-21 in vendor/mlx-indextts2-inference/.venv.
+# Install together with the pinned upstream editable project and its v25 extra.
+# Keep config/native_mlx_runtime.constraints.txt in the install command: upstream
+# uv.lock alone selects a different runtime. Curated pins, not transitive hashes.
+mlx==0.32.4
+mlx-metal==0.32.4
+numpy==2.4.3
+soundfile==0.13.1
+torch==2.10.0
+torchaudio==2.10.0
+transformers==5.3.0
+scipy==1.17.1

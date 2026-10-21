@@ -1,0 +1,14 @@
+{
+  "background_max_gain_db": 10,
+  "title_background_gain_db": 4,
+  "adaptive_background": true,
+  "ducking": false,
+  "burn_bilingual": true,
+  "subtitle_order": [
+    "zh",
+    "de"
+  ],
+  "logo_file": "assets/philos_haircut_logo.png",
+  "logo_width_px": 84,
+  "logo_opacity": 0.55
+}

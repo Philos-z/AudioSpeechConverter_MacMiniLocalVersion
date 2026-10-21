@@ -1,0 +1,155 @@
+{
+  "schema_version": 1,
+  "models": [
+    {
+      "repo": "IndexTeam/IndexTTS-2.5",
+      "repo_type": "model",
+      "revision": "c39ce5ba981572cb187443877ff559dfb246ce63",
+      "directory": "models/indextts-2.5",
+      "files": [
+        {
+          "path": ".gitattributes",
+          "size": 1589,
+          "sha256": "b82c299ad0e975be79be308df962ef3b8d72f8a435066287360daa8211c30ddb"
+        },
+        {
+          "path": "LICENSE",
+          "size": 10553,
+          "sha256": "cc7da9ea0f8a97ef15ab3bf0389e636ce79ffca1aef5489520796ac87d87a87b"
+        },
+        {
+          "path": "README.md",
+          "size": 4272,
+          "sha256": "d21e2ed55013ce0c456b9aa6d4fab7222365bfad10dd839155da0ce36fa93001"
+        },
+        {
+          "path": "codec.pth",
+          "size": 607290935,
+          "sha256": "d15cbed16a40f478438c961fb043f68dfa6353bf56c966761315db3433e9722c"
+        },
+        {
+          "path": "config.yaml",
+          "size": 2860,
+          "sha256": "18adf417be3e8f5e2e48e30f7420c719170a6870619436250f360d626877870e"
+        },
+        {
+          "path": "feat1.pt",
+          "size": 57170,
+          "sha256": "f219cb447d80216ba615666da2ff8d63ac544eee26657f3a7b278692bf7a67c4"
+        },
+        {
+          "path": "feat2.pt",
+          "size": 374866,
+          "sha256": "9c4292e96dee535aea9a6206e9a0c856dd578dde9212acdb16dd3ada4d12bf80"
+        },
+        {
+          "path": "gpt.pth",
+          "size": 3259599833,
+          "sha256": "43a8f4c30eccdf201958d3b9713511482c19d56dc20b0b1c4ee1e6b080b19d85"
+        },
+        {
+          "path": "multilingual_zh_ja_yue_char_del.tiktoken",
+          "size": 907395,
+          "sha256": "747979631e813193436aabcff7c1c235d37de8097b71c563ec8b63b7a515c718"
+        },
+        {
+          "path": "s2mel.pth",
+          "size": 414908601,
+          "sha256": "9b1b0003fc189c94cc349758d7ebc25f903b7eb2de4602879959cc64ce816456"
+        },
+        {
+          "path": "wav2vec2bert_stats.pt",
+          "size": 9343,
+          "sha256": "c9c176c2b8850ab2e3ba828bbfa969deaf4566ce55db5f2687b8430b87526ad2"
+        }
+      ]
+    },
+    {
+      "repo": "facebook/w2v-bert-2.0",
+      "repo_type": "model",
+      "revision": "da985ba0987f70aaeb84a80f2851cfac8c697a7b",
+      "directory": "models/indextts-2.5/hf_cache/w2v-bert-2.0",
+      "files": [
+        {
+          "path": "README.md",
+          "size": 4792,
+          "sha256": "478afeacb3b4ce0d86b361f099416d28a7e7673ade31775c0f85f396979b7fc2"
+        },
+        {
+          "path": "config.json",
+          "size": 1874,
+          "sha256": "f5572bd5998b68182e9c328a43127ed21fed687f6910497136b91a4e3b0e3675"
+        },
+        {
+          "path": "model.safetensors",
+          "size": 2322063736,
+          "sha256": "eb890c9660ed6e3414b6812e27257b8ce5454365d5490d3ad581ea60b93be043"
+        },
+        {
+          "path": "preprocessor_config.json",
+          "size": 275,
+          "sha256": "8e6281aad64f97e40534135a59dcc5d33571efae376f2a25adf5551951897ab4"
+        }
+      ]
+    },
+    {
+      "repo": "funasr/campplus",
+      "repo_type": "model",
+      "revision": "e4b6ede7ce16997aff4ae69fbca1f0175e2afede",
+      "directory": "models/indextts-2.5/hf_cache",
+      "files": [
+        {
+          "path": "campplus_cn_common.bin",
+          "size": 28036335,
+          "sha256": "3388cf5fd3493c9ac9c69851d8e7a8badcfb4f3dc631020c4961371646d5ada8"
+        }
+      ]
+    },
+    {
+      "repo": "nvidia/bigvgan_v2_22khz_80band_256x",
+      "repo_type": "model",
+      "revision": "633ff708ed5b74903e86ff1298cf4a98e921c513",
+      "directory": "models/indextts-2.5/hf_cache/bigvgan",
+      "files": [
+        {
+          "path": "LICENSE",
+          "size": 1076,
+          "sha256": "90459cd52fc41bd723df7c0c76fac1e4dd60e6bfd644a7e2a93f325bed4f6d95"
+        },
+        {
+          "path": "README.md",
+          "size": 8038,
+          "sha256": "e70574f9ca1a0fac3a1faea840898c4c814552e46f5c160639db1397f9c7ddf4"
+        },
+        {
+          "path": "bigvgan_generator.pt",
+          "size": 449228171,
+          "sha256": "e95ba25972d3de0628d99cd156e9315a9c018899bf739988959ebe3544080ced"
+        },
+        {
+          "path": "config.json",
+          "size": 1405,
+          "sha256": "88a1f47acf747db0b21e97a389d838566147f7a5464583ff5c8d819d870f03ee"
+        }
+      ]
+    },
+    {
+      "repo": "IndexTeam/IndexTTS-2-Demo",
+      "repo_type": "space",
+      "revision": "b01840e8e4fd9753743a6d0466cd73ae1d634a68",
+      "directory": "references/official",
+      "files": [
+        {
+          "path": "examples/emo_sad.wav",
+          "size": 842016,
+          "sha256": "f7d3e5bf2b7bca6458f9e6d7a5ce073c41eb4418895e7df2f994e5a0c96c064a"
+        },
+        {
+          "path": "examples/voice_01.wav",
+          "size": 478050,
+          "sha256": "e33e6ee0107a1dd58e1d66dd90c13df3d55a8683047cc3d7ea206dad84ed3fc8"
+        }
+      ]
+    }
+  ]
+}

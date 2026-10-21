@@ -1,0 +1,14 @@
+# Observed on 2026-10-21 in vendor/index-tts/.venv of the accepted deployment.
+# Install together with the pinned upstream editable project; its pyproject.toml
+# remains authoritative for base dependencies. These curated pins include local
+# additions that the upstream lock alone does not install. No model weights.
+demucs==4.0.1
+torch==2.8.0
+torchaudio==2.8.0
+numpy==2.2.6
+scipy==1.16.2
+soundfile==0.13.1
+Pillow==11.3.0
+transformers==4.52.1
+nltk==3.9.1
+huggingface-hub==0.35.0

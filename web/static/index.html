@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#173d35">
+  <title>Philos 译配</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <div class="page-glow" aria-hidden="true"></div>
+  <header class="site-header wrap">
+    <a class="brand" href="/" aria-label="Philos 译配首页"><span class="brand-name">Philos<span>.</span></span><span class="brand-divider"></span><span class="brand-product">译配</span></a>
+    <div class="connection" id="connection" data-state="connecting"><span class="connection-dot"></span><span id="connection-text">正在连接服务</span></div>
+  </header>
+
+  <main class="wrap">
+    <section class="intro" aria-labelledby="page-title">
+      <p class="eyebrow">听见内容的另一种表达</p>
+      <h1 id="page-title">让好内容，<br class="mobile-break">换一种语言继续讲。</h1>
+      <p class="intro-copy">放入视频，生成中文配音、背景合成与中德双语字幕。<br class="desktop-break">先看审稿预览，再试听确认。</p>
+    </section>
+
+    <div class="service-notice" id="service-notice" role="status" hidden><span class="notice-mark" aria-hidden="true">i</span><p id="service-notice-text"></p><button class="text-button" id="reconnect-button" type="button">重新连接</button></div>
+    <div class="workspace-grid">
+      <section class="card create-card" aria-labelledby="create-title">
+        <div class="card-heading"><div><p class="section-kicker">01 · 添加素材</p><h2 id="create-title">开始一次译配</h2></div><span class="tiny-badge">完整流程</span></div>
+        <div class="source-tabs" role="tablist" aria-label="选择素材来源">
+          <button class="source-tab active" id="upload-tab" role="tab" aria-selected="true" aria-controls="upload-panel" tabindex="0" type="button"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3.5 5.5h5l1.5 2h6.5v8h-13zM3.5 5.5v-1h5l1.5 2"/></svg>本地视频</button>
+          <button class="source-tab" id="url-tab" role="tab" aria-selected="false" aria-controls="url-panel" tabindex="-1" type="button"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m8 12 4-4M7 13l-1 1a3 3 0 0 1-4-4l3-3a3 3 0 0 1 4 0m2 6a3 3 0 0 0 4 0l3-3a3 3 0 0 0-4-4l-1 1"/></svg>视频链接</button>
+        </div>
+
+        <form id="source-form" novalidate>
+          <div id="upload-panel" role="tabpanel" aria-labelledby="upload-tab">
+            <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="选择视频，或将视频拖到这里">
+              <div class="upload-symbol"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="M16 21V7m-5 5 5-5 5 5M7 20v5h18v-5"/></svg></div>
+              <p class="drop-title" id="drop-title">把视频拖到这里</p>
+              <p class="drop-copy" id="drop-copy">或点击选择本地文件</p>
+              <span class="file-hint" id="file-hint">MP4、MOV、MKV · 德语横屏 16:9 · 最长30分钟 · 1GB以内</span>
+              <input id="video-file" type="file" accept="video/*,.mkv,.mov,.mp4,.m4v,.webm,.avi,.ts" hidden>
+            </div>
+            <div class="file-selected" id="file-selected" hidden><div class="file-glyph" aria-hidden="true">▶</div><div class="file-detail"><strong id="selected-name"></strong><span id="selected-size"></span></div><button class="icon-button" id="remove-file" type="button" aria-label="移除已选视频">×</button></div>
+          </div>
+
+          <div id="url-panel" role="tabpanel" aria-labelledby="url-tab" hidden>
+            <label class="field-label" for="source-url">视频链接</label>
+            <input class="text-input" id="source-url" type="url" inputmode="url" autocomplete="off" placeholder="https://…">
+            <p class="field-help">粘贴可以访问的视频页面链接。当前支持德语、16:9 横屏，最长30分钟。</p>
+            <label class="field-label spaced-label" for="job-title">任务名称 <span>可选</span></label>
+            <input class="text-input" id="job-title" type="text" maxlength="120" autocomplete="off" placeholder="给这段视频起个名字">
+          </div>
+
+          <details class="output-settings">
+            <summary><span>输出设置</span><span class="settings-summary">保留原比例 · 540p <span aria-hidden="true">⌄</span></span></summary>
+            <div class="settings-body"><div class="setting-chips"><span>保留原比例</span><span>540p 轻量成片</span><span>自然中文</span><span>中德双语字幕</span><span>背景清晰</span></div><p>默认运行完整流程。保留画面原有方向，使用较大的双语字幕，方便手机观看。</p></div>
+          </details>
+
+          <div class="submission-progress" id="submission-progress" hidden><div class="progress-caption"><span id="submission-text">正在提交素材</span><span id="upload-percent"></span></div><progress id="upload-progress" max="100" value="0"></progress></div>
+          <p class="form-error" id="form-error" role="alert" hidden></p>
+          <button class="primary-button" id="start-button" type="submit"><span class="button-label">开始译配</span><span class="button-arrow" aria-hidden="true">↗</span><span class="button-spinner" aria-hidden="true"></span></button>
+          <p class="rights-note">请使用已获视频改编与声音使用授权的素材。</p>
+          <p class="processing-note">识别、音轨分离、配音与导出在你的 Mac 上完成。<br>翻译与口语化文字由已连接的文字服务处理。</p>
+        </form>
+      </section>
+
+      <section class="card result-card" aria-labelledby="result-title">
+        <div class="card-heading"><div><p class="section-kicker">02 · 机器审稿预览</p><h2 id="result-title">先试听，再确认</h2></div><span class="status-pill" id="detail-status" hidden></span></div>
+        <p class="quality-note">呼吸与声音细节优化中，生成结果仍需试听确认。</p>
+        <div class="preview-empty" id="preview-empty"><div class="preview-art" aria-hidden="true"><div class="preview-frame"><span>▶</span></div><span class="art-caption-line"></span><span class="art-caption-line short"></span></div><h3 id="empty-title">下一段好内容，从这里开始</h3><p id="empty-copy">选中任务后，可以查看处理进度。<br>完成的视频与下载文件会显示在这里。</p></div>
+
+        <div id="job-detail" hidden>
+          <h3 class="detail-job-title" id="detail-title"></h3>
+          <div class="job-progress" id="job-progress"><div class="progress-caption"><span id="detail-stage">等待处理</span><strong id="detail-percent">0%</strong></div><progress id="detail-progress" max="100" value="0"></progress><p class="progress-note" id="progress-note">任务进度由处理服务实时更新。</p></div>
+          <div class="job-error" id="job-error" hidden><strong id="job-error-title">这次处理没有完成</strong><p id="job-error-copy"></p><button class="secondary-button compact" id="retry-button" type="button">重新提交素材</button></div>
+          <div class="media-preview" id="media-preview" hidden><video id="result-video" controls playsinline preload="metadata" hidden></video><audio id="result-audio" controls preload="metadata" hidden></audio></div>
+          <div class="downloads" id="downloads" hidden><p class="download-label">下载审稿预览</p><div class="download-links" id="download-links"></div></div>
+          <div class="detail-footer"><span id="detail-date"></span><button class="text-button danger" id="cancel-button" type="button" hidden>取消任务</button></div>
+        </div>
+      </section>
+    </div>
+
+    <section class="tasks-section" aria-labelledby="tasks-title"><div class="tasks-heading"><div><p class="section-kicker">工作记录</p><h2 id="tasks-title">译配任务 <span id="task-count"></span></h2></div><button class="text-button refresh-button" id="refresh-jobs" type="button"><span aria-hidden="true">↻</span> 刷新</button></div><p class="list-error" id="list-error" role="status" hidden></p><div class="tasks-empty" id="tasks-empty"><span aria-hidden="true">＋</span><p>还没有任务，先放入一段视频吧。</p></div><ul class="jobs-list" id="jobs-list" aria-label="译配任务列表"></ul></section>
+    <footer class="site-footer"><span>Philos 译配</span><span>局域网共享任务</span><span>让理解，跨过语言。</span></footer>
+  </main>
+  <div class="toast" id="toast" role="status" hidden></div>
+  <div class="sr-only" id="live-status" aria-live="polite" aria-atomic="true"></div>
+</body>
+</html>

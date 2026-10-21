@@ -1,0 +1,6 @@
+[submodule "vendor/index-tts"]
+	path = vendor/index-tts
+	url = https://github.com/index-tts/index-tts.git
+[submodule "vendor/mlx-indextts2-inference"]
+	path = vendor/mlx-indextts2-inference
+	url = https://github.com/groxaxo/mlx-indextts2-inference.git
