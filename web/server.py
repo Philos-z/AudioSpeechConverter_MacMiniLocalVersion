@@ -26,6 +26,7 @@ import wave
 import urllib.request
 
 from pipeline import DEFAULT_TTS_PROFILE, DEFAULT_TTS_GROUPING, DEFAULT_MASTERING_POLICY
+from source_language import normalize_language, source_language_metadata
 
 ID = re.compile(r'^web_\d{8}_\d{6}_[a-f0-9]{8}$')
 VIDEO_EXT = {'.mp4', '.mov', '.m4v', '.mkv', '.webm', '.avi', '.ts', '.mpeg', '.mpg', '.flv', '.wmv'}
@@ -113,7 +114,7 @@ class JobManager:
             self.thread.start()
 
     def public(self, job):
-        keys = ('id', 'title', 'status', 'stage', 'progress', 'created_at', 'updated_at', 'error', 'warnings', 'metrics', 'duration_s', 'review_status')
+        keys = ('id', 'title', 'status', 'stage', 'progress', 'created_at', 'updated_at', 'error', 'warnings', 'metrics', 'duration_s', 'review_status', 'source_language', 'source_language_label', 'episode_count', 'episodes')
         result = {k: job[k] for k in keys if k in job}
         result['artifacts'] = [
             {'label': item['label'], 'kind': item.get('kind', 'file'),
@@ -130,7 +131,8 @@ class JobManager:
     def new_id(self):
         return datetime.now().strftime('web_%Y%m%d_%H%M%S_') + uuid.uuid4().hex[:8]
 
-    def add(self, *, input_path=None, source_url=None, title='', source_sha256=None, job_id=None):
+    def add(self, *, input_path=None, source_url=None, title='', source_sha256=None, job_id=None, source_language='auto'):
+        source_language = normalize_language(source_language)
         with self.condition:
             if sum(x['status'] in ACTIVE for x in self.jobs.values()) >= 3:
                 raise ValueError('当前有3个任务在等待或处理中，请稍后提交。')
@@ -145,7 +147,10 @@ class JobManager:
                                'tts_grouping': DEFAULT_TTS_GROUPING,
                                'mastering_policy': DEFAULT_MASTERING_POLICY,
                                'voice_pilot_groups': 2,
-                               'subtitles': 'zh_above_de', 'human_reviewed': False},
+                               'source_language': source_language, 'target_language': 'zh',
+                               'episode_max_seconds': 1800, 'split_long_source': True,
+                               'subtitles': 'zh_above_source', 'human_reviewed': False},
+                   **source_language_metadata(source_language),
                    'review_status': '机器审稿预览，仍需核对专名与听感'}
             if input_path:
                 path = Path(input_path).resolve()
@@ -439,6 +444,8 @@ class JobManager:
                                artifacts=artifacts, updated_at=now(),
                                metrics=result.get('metrics', {}), duration_s=result.get('duration_s'),
                                warnings=result.get('warnings', []))
+                    for field in ('source_language', 'source_language_label', 'episode_count', 'episodes'):
+                        if field in result:job[field] = result[field]
                     self.save(job)
             except Exception as error:
                 with self.lock:
@@ -466,7 +473,9 @@ class JobManager:
                 'compute': {'local': ['音频识别', '背景分离', '说话人分组', '中文配音', '混音', '字幕和视频导出'],
                             'cloud_via_proxy': ['翻译', '口语化', '机器复核']},
                 'queue': sum(j['status'] == 'queued' for j in self.jobs.values()),
-                'limits': {'upload_bytes': MAX_UPLOAD, 'video_seconds': 1800, 'reserved_gib': 8},
+                'limits': {'upload_bytes': MAX_UPLOAD, 'episode_seconds': 1800,
+                           'split_long_source': True, 'source_language_auto': True,
+                           'output_video_bytes': 50000000, 'reserved_gib': 8},
                 'free_gib': round(shutil.disk_usage(self.root).free / 1024 ** 3, 2),
                 'quality': '自动生成预览；吸气声仍在优化，需核对专名和听感'}
 
@@ -660,7 +669,8 @@ class Handler(BaseHTTPRequestHandler):
                 source_url = validate_source_url(body.get('source_url'))
                 if shutil.disk_usage(self.manager.root).free < RESERVE + 512 * 1024 ** 2:
                     return self.json_response(507, {'detail': '空间不足，已保留8GB供系统运行。'})
-                result = self.manager.add(source_url=source_url, title=body.get('title', ''))
+                result = self.manager.add(source_url=source_url, title=body.get('title', ''),
+                                          source_language=body.get('source_language', 'auto'))
                 return self.json_response(201, result)
             except (ValueError, AttributeError, TypeError) as error:
                 return self.json_response(400, {'detail': safe_message(error)})
@@ -693,6 +703,7 @@ class Handler(BaseHTTPRequestHandler):
             with self.manager.lock:
                 if sum(x['status'] in ACTIVE for x in self.manager.jobs.values()) >= 3:
                     return self.json_response(429, {'detail': '当前任务较多，请稍后提交。'}, close=True)
+            source_language = normalize_language(query.get('source_language', ['auto'])[0])
             name = Path(str(query.get('name', ['video.mp4'])[0]).replace('\\', '/')).name
             extension = Path(name).suffix.lower()
             if extension not in VIDEO_EXT:
@@ -712,7 +723,8 @@ class Handler(BaseHTTPRequestHandler):
                         raise ValueError('视频上传中断，请重新提交。')
                     sha.update(chunk); output.write(chunk); remaining -= len(chunk)
             part.replace(target)
-            result = self.manager.add(input_path=target, source_sha256=sha.hexdigest(), title=Path(name).stem, job_id=job_id)
+            result = self.manager.add(input_path=target, source_sha256=sha.hexdigest(), title=Path(name).stem, job_id=job_id,
+                                      source_language=source_language)
             registered = True
             return self.json_response(201, result)
         except (OSError, ValueError) as error:

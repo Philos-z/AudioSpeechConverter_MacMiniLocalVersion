@@ -22,6 +22,7 @@ import tempfile
 import threading
 import time
 from urllib.parse import urlparse
+from source_language import normalize_language, language_label, source_language_metadata
 
 VERSION='local_web_natural_pipeline_v1'
 DEFAULT_TTS_PROFILE='hybrid-gpt-preserve-25-pad-eager'
@@ -240,10 +241,20 @@ def validate_translations(before,after,report):
     if report.get('human_reviewed') is not False or report.get('review_method')!='two_pass_machine_review_and_numeric_invariants':
         raise RuntimeError('译稿没有实际机器二审及数字检查记录')
     source={r['segment_id']:r for r in before}
+    for original in before:
+        if 'text_source' in original and original['text_source']!=original['text_de']:
+            raise RuntimeError('原文兼容字段内容不一致')
+        language=original.get('source_language')
+        if language and report.get('source_language', 'de' if language=='de' else None)!=language:
+            raise RuntimeError('译稿审校语言与实际原文不一致')
     for row in after:
         original=source.get(row['segment_id'])
         if not original or any(row.get(k)!=original.get(k) for k in ('speaker_id','start_s','end_s','text_de')):
             raise RuntimeError('机器译稿改变了源台词或时间/说话人归属')
+        if (('text_source' in original and row.get('text_source')!=original['text_source'])
+                or ('source_language' in original and row.get('source_language')!=original['source_language'])
+                or ('text_source' in row and row['text_source']!=row['text_de'])):
+            raise RuntimeError('机器译稿改变了原文或源语言字段')
         if (not isinstance(row.get('text_zh'),str) or not row['text_zh'].strip()
                 or row.get('translation_reviewed') is not True or row.get('human_reviewed') is not False
                 or row.get('translation_review_method')!='proxy_second_pass_and_numeric_checks'):
@@ -350,32 +361,37 @@ def reviewed_natural_groups(root,folder,rows,profile,emotion):
     return sorted(groups,key=lambda ids:positions[ids[0]])
 
 
-def german_sentence_end(text):
-    tail=text.rstrip().rstrip('"\'”’»›)]}').rstrip()
-    if not re.search(r'[.!?…]$',tail):return False
+def german_sentence_end(text,source_language='de'):
+    tail=text.rstrip().rstrip('"\'”’»›)]}」』）】》').rstrip()
+    if not re.search(r'[.!?…。！？؟۔।॥]$',tail):return False
     # Common abbreviations do not prove a sentence ending by themselves.
-    if re.search(r'(?:\b(?:Dr|Prof|bzw|usw|ca|Nr|Str)|z\.\s*B|u\.\s*a)\.$',tail,re.I):return False
+    abbreviations=(r'(?:\b(?:Dr|Prof|bzw|usw|ca|Nr|Str)|z\.\s*B|u\.\s*a)\.$'
+        if source_language=='de' else r'\b(?:Dr|Prof|Mr|Mrs|Ms|St|etc|vs)\.$')
+    if re.search(abbreviations,tail,re.I):return False
     return True
 
 
-def regroup_sentence_rows(assigned,duration,max_span_s=24.,max_gap_s=1.2):
+def regroup_sentence_rows(assigned,duration,max_span_s=24.,max_gap_s=1.2,source_language='de'):
     """Join raw ASR fragments up to actual German sentence endings, same voice.
 
     Never split a raw fragment or lose source IDs to meet an arbitrary duration.
     Incomplete >24s/source-speaker boundaries stay explicit for later review.
     """
-    if not assigned:raise RuntimeError('没有可编排的德语原台词')
+    if not assigned:raise RuntimeError('没有可编排的原文台词')
     grouped=[];issues=[]
     expected=[sid for row in assigned for sid in row.get('source_ids',[row['segment_id']])]
     if len(set(expected))!=len(expected):raise RuntimeError('原始 ASR 编号重复，不能安全重新编排')
     for row in assigned:
+        if (('text_source' in row and row['text_source']!=row['text_de'])
+                or ('source_language' in row and row['source_language']!=source_language)):
+            raise RuntimeError('原文兼容字段或源语言不一致，未重新编排')
         text=row['text_de'].strip()
         if not text:raise RuntimeError('原始 ASR 台词为空，不能静默丢弃')
         ids=list(row.get('source_ids',[row['segment_id']]))
         join=False
         if grouped:
             previous=grouped[-1]
-            join=(not german_sentence_end(previous['text_de']) and previous['speaker_id']==row['speaker_id']
+            join=(not german_sentence_end(previous['text_de'],source_language) and previous['speaker_id']==row['speaker_id']
                 and -.04<=row['start_s']-previous['end_s']<=max_gap_s
                 and row['end_s']-previous['start_s']<=max_span_s)
         if join:
@@ -390,16 +406,19 @@ def regroup_sentence_rows(assigned,duration,max_span_s=24.,max_gap_s=1.2):
         boundary=grouped[index+1]['start_s'] if index+1<len(grouped) else duration
         row['slot_end_s']=min(boundary-.06,row['end_s']+.8,duration)
         row['target_characters']=max(5,int(max(.1,row['slot_end_s']-row['start_s'])*3.8))
-        row['german_sentence_complete']=german_sentence_end(row['text_de'])
+        row['text_source']=row['text_de'];row['source_language']=source_language
+        row['source_sentence_complete']=german_sentence_end(row['text_de'],source_language)
+        row['german_sentence_complete']=row['source_sentence_complete']
         if not row['german_sentence_complete']:
             issues.append({'segment_id':row['segment_id'],'reason':'incomplete_source_sentence_at_speaker_gap_or_24s_boundary'})
         if row['end_s']-row['start_s']>max_span_s:
             issues.append({'segment_id':row['segment_id'],'reason':'single_raw_asr_fragment_exceeds_24s_preserved_intact'})
     actual=[sid for row in grouped for sid in row['source_ids']]
-    if actual!=expected:raise RuntimeError('德语句子编排改变了原始台词顺序或覆盖范围')
+    if actual!=expected:raise RuntimeError('原文句子编排改变了原始台词顺序或覆盖范围')
     return {'schema_version':2,'segments':grouped,'source':'unchanged source ASR fragments',
         'speaker_method':'same-speaker machine acoustic assignments','identities_verified':False,'human_reviewed':False,
-        'grouping_method':'complete German sentence punctuation; same speaker; contiguous <=1.2s; max24s without slicing ASR',
+        **source_language_metadata(source_language),
+        'grouping_method':'complete source sentence punctuation; same speaker; contiguous <=1.2s; max24s without slicing ASR',
         'source_ids_count':len(actual),'issues':issues}
 
 
@@ -500,8 +519,11 @@ class Flow:
             raise ValueError('无效的选音小样设置')
         for executable in (self.py,self.mlx_py,self.asr_py,Path(FFMPEG),Path(FFPROBE)):
             if not executable.is_file():raise RuntimeError('缺少已安装的本地运行环境：'+str(executable))
-        if self.options.get('source_language','de')!='de' or self.options.get('target_language','zh')!='zh':
-            raise RuntimeError('首版自动流程目前支持德语原视频转中文')
+        requested_language=normalize_language(self.options.get('source_language','de'))
+        if self.options.get('target_language','zh')!='zh':raise RuntimeError('当前输出语言为中文')
+        episode_max=self.options.get('episode_max_seconds',1800)
+        if type(episode_max) not in (int,float) or not math.isfinite(episode_max) or not 1<=episode_max<=1800:
+            raise ValueError('每集时长上限必须在1至1800秒以内')
         profile=self.options.get('experimental_profile',DEFAULT_TTS_PROFILE)
         if profile not in PROFILES:raise ValueError('不支持的25步配音配置')
         if not (self.root/'assets/philos_haircut_logo.png').is_file():raise RuntimeError('项目logo素材缺失')
@@ -519,17 +541,21 @@ class Flow:
         if not self.cached('prepare',prepare_signature,[]):
             probe=json.loads(self.command('读取视频信息',5,6,[FFPROBE,'-v','error','-show_streams','-show_format','-of','json',source_file])['stdout'])
             geometry(probe);duration=float(probe['format']['duration'])
-            if not math.isfinite(duration) or not 0<duration<=float(config.get('max_video_seconds',1800)):
+            if not math.isfinite(duration) or duration<=0:
                 raise RuntimeError('视频时长超出当前本机单任务限制')
-            self.metrics['space_preflight']=space_preflight(duration,shutil.disk_usage(self.root).free,
-                float(config.get('minimum_free_gib',8)))
-            save(self.folder/'space_preflight.json',self.metrics['space_preflight'])
             track=prepare_signature['audio_track'];audio=[s for s in probe['streams'] if s['codec_type']=='audio']
             if not 0<=track<len(audio):raise RuntimeError('所选音轨不存在')
             video=next(s for s in probe['streams'] if s['codec_type']=='video')
             if abs(float(video.get('start_time',0)))>.05 or abs(float(audio[track].get('start_time',0)))>.05:
                 raise RuntimeError('素材音视频起始时间偏移较大，需先校正后再自动配音')
             save(source_json,{'input':str(source_file.resolve()),'audio_track':track,'duration_s':duration,'probe':probe})
+            if duration>episode_max and self.options.get('split_long_source',False):
+                return self.process_episodes(config,source_file,source_sha,probe,duration,track,requested_language,episode_max)
+            if duration>float(config.get('max_video_seconds',1800)):
+                raise RuntimeError('视频较长，请通过网页新建任务，按每集最多30分钟自动分集')
+            self.metrics['space_preflight']=space_preflight(duration,shutil.disk_usage(self.root).free,
+                float(config.get('minimum_free_gib',8)))
+            save(self.folder/'space_preflight.json',self.metrics['space_preflight'])
             self.command('提取原声音轨',6,9,[FFMPEG,'-v','error','-y','-i',source_file,'-map',f'0:a:{track}','-vn','-ac','2','-ar','48000','-c:a','pcm_s24le',self.folder/'audio/original.wav'])
             self.command('准备语音识别音轨',9,10,[FFMPEG,'-v','error','-y','-i',self.folder/'audio/original.wav','-ac','1','-ar','16000','-c:a','pcm_s16le',self.folder/'audio/asr16k.wav'])
             self.remember('prepare',prepare_signature,[source_json,self.folder/'audio/original.wav',self.folder/'audio/asr16k.wav'])
@@ -543,6 +569,12 @@ class Flow:
             'third_party_rights_independently_verified':False,'publication_performed':False})
         save(self.folder/'rights.json',{'media_authorized':None,'voice_authorized':None,'scope':'private draft; source rights unverified'})
         asr=self._analyze_audio(config)
+        detected=read(asr)
+        actual_language=normalize_language(detected.get('source_language') or detected.get('language') or requested_language,allow_auto=False)
+        metadata={**source_language_metadata(actual_language),'requested_source_language':requested_language}
+        if any(source.get(k)!=v for k,v in metadata.items()):
+            source.update(metadata);save(source_json,source)
+            self.remember('prepare',prepare_signature,[source_json,self.folder/'audio/original.wav',self.folder/'audio/asr16k.wav'])
         plan=self.folder/'segments.plan.json';speaker_signature={'asr_sha':digest(asr),'vocals_sha':digest(self.folder/'separated/htdemucs/original/vocals.wav'),'code':digest(script(self.root,'speaker_plan.py')),
             'sentence_regroup':'raw_assignments_sentence24_v1','regroup_code':digest(Path(__file__))}
         correction=self.folder/'speaker_corrections.json'
@@ -554,7 +586,7 @@ class Flow:
             else:argv=[self.py,script(self.root,'speaker_plan.py'),'--root',self.root,'--job',self.name]
             self.command('区分说话人与选择参考声音',40,45,argv)
             self.command('检查参考声音',45,46,self.internal('_check_speakers'))
-            self.command('按德语完整句重新编排',46,46,self.internal('_regroup_sentences'))
+            self.command('按原文完整句重新编排',46,46,self.internal('_regroup_sentences'))
             refs=[self.root/s['reference'] for s in read(self.folder/'speakers.json').values()]
             self.remember('speakers',speaker_signature,[plan,self.folder/'speakers.json',self.folder/'sentence_group_receipt.json',*refs])
         planned=read(plan)['segments']
@@ -563,10 +595,10 @@ class Flow:
             if not math.isfinite(preview) or preview<=0:raise ValueError('预览长度无效')
             planned=[r for r in planned if r['start_s']<preview] or planned[:1]
             self.warnings.append('本任务仅生成完整台词边界内的前段预览，未生成后续整片。')
-        translation_input=self.folder/'translation/input.json';save(translation_input,{'segments':planned})
+        translation_input=self.folder/'translation/input.json';save(translation_input,{'segments':planned,**source_language_metadata(actual_language)})
         translated=self.folder/'segments.json';translation_report=self.folder/'translation/report.json'
         tsig={'plan':key(planned),'speakers':digest(self.folder/'speakers.json'),
-            'proxy_client_code':digest(Path(__file__).with_name('proxy_client.py')),'method':'actual_two_pass_numeric_checks'}
+            'source_language':actual_language,'proxy_client_code':digest(Path(__file__).with_name('proxy_client.py')),'method':'actual_two_pass_numeric_checks'}
         if not self.cached('translation',tsig,[]):
             def tr_line(text):
                 try:event=json.loads(text)
@@ -767,12 +799,128 @@ class Flow:
             human_reviewed=False,end_to_end_80_percent_verified=False,tts=read(native_manifest).get('timings',{}))
         save(self.folder/'web_pipeline_metrics.json',self.metrics)
         self.emit('机器译配草稿已完成',100,{'human_reviewed':False,'segments':len(rows)})
+        self.metrics.update(**source_language_metadata(actual_language))
+        save(self.folder/'web_pipeline_metrics.json',self.metrics)
+        source_subtitle='de.srt' if actual_language=='de' else 'source_'+actual_language+'.srt'
+        if source_subtitle!='de.srt':shutil.copyfile(candidate/'de.srt',candidate/source_subtitle)
         artifacts=[{'label':label,'path':str((candidate/name).resolve()),'kind':kind} for label,name,kind in [
             ('中文双语视频草稿',video_name,'video'),('中文配音与背景','zh_mix.m4a','audio'),
-            ('中文字幕','zh.srt','subtitle'),('德语字幕','de.srt','subtitle'),('工程检查',names['verify'],'report')]]
+            ('中文字幕','zh.srt','subtitle'),(language_label(actual_language)+'字幕',source_subtitle,'subtitle'),('工程检查',names['verify'],'report')]]
         for artifact in artifacts:artifact['sha256']=digest(Path(artifact['path']))
         return {'artifacts':artifacts,'duration_s':audit['duration_s'],'warnings':self.warnings,'metrics':self.metrics,
-                'human_reviewed':False,'status':'machine_reviewed_draft'}
+                **source_language_metadata(actual_language),'human_reviewed':False,'status':'machine_reviewed_draft'}
+    def process_episodes(self,config,source_file,source_sha,probe,duration,track,requested_language,episode_max,
+                         source_window_max=None,replan_attempt=0):
+        """Transcribe once, then run speech-safe episodes under the held GPU lock.
+
+        Child processes belong to the parent supervisor for cancellation. Child
+        jobs do not reenter run_job's flock or publish sibling private paths.
+        """
+        from episode_planner import plan_episodes, slice_asr, EpisodePlanningError
+        self.metrics['space_preflight']=space_preflight(duration,shutil.disk_usage(self.root).free,
+            float(config.get('minimum_free_gib',8)))
+        save(self.folder/'space_preflight.json',self.metrics['space_preflight'])
+        asr_audio=self.folder/'audio/full_source_asr16k.wav'
+        asr=self.folder/'segments.full_source.asr.json'
+        signature={'source_sha256':source_sha,'audio_track':track,'language':requested_language,
+            'model':config['asr_model'],'asr_code':digest(script(self.root,'asr.py'))}
+        if not self.cached('full_source_asr',signature,[]):
+            self.command('准备长视频识别音轨',6,7,[FFMPEG,'-v','error','-y','-i',source_file,
+                '-map',f'0:a:{track}','-vn','-ac','1','-ar','16000','-c:a','pcm_s16le',asr_audio])
+            self.command('识别完整原文与分集边界',7,16,[self.asr_py,script(self.root,'asr.py'),
+                '--input',asr_audio,'--model',config['asr_model'],'--output',asr,'--language',requested_language],
+                env={'OMP_NUM_THREADS':'2','MKL_NUM_THREADS':'2','OPENBLAS_NUM_THREADS':'2'},timeout=43200)
+            self.metrics['full_source_asr_runs']=self.metrics.get('full_source_asr_runs',0)+1
+            self.remember('full_source_asr',signature,[asr_audio,asr])
+        full_asr=read(asr)
+        actual=normalize_language(full_asr.get('source_language') or full_asr.get('language'),allow_auto=False)
+        try:plan=plan_episodes(full_asr,duration,max_seconds=source_window_max or episode_max,fps=25)
+        except EpisodePlanningError as error:
+            save(self.folder/'episode_planning_failure.json',{'code':error.code,'detail':error.detail})
+            raise RuntimeError('无法在可靠的句间或词间停顿安全分集，请检查识别时间戳后重试；原素材已保留') from error
+        plan.update(source_sha256=source_sha,full_asr_sha256=digest(asr),audio_track=track,
+            planner_sha256=digest(script(self.root,'episode_planner.py')))
+        plan_path=self.folder/'episode_plan.json';save(plan_path,plan)
+        plan_key=key(plan)[:12];episodes=plan['episodes'];total=len(episodes)
+        source=read(self.folder/'source.json')
+        source.update(**source_language_metadata(actual),requested_source_language=requested_language,episode_count=total)
+        save(self.folder/'source.json',source)
+        self.emit(f'已按停顿分为{total}集',17,{'episode_count':total,**source_language_metadata(actual)})
+        artifacts=[];summaries=[];children=[]
+        for episode in episodes:
+            self.check();number=episode['episode_index'];prefix=f'第{number}/{total}集 · '
+            lo=17+82*(number-1)/total;hi=17+82*number/total
+            folder=self.folder/'episode_inputs';folder.mkdir(exist_ok=True)
+            clip=folder/f'episode_{number:03d}_{plan_key}.mp4'
+            receipt=folder/f'episode_{number:03d}_{plan_key}.json'
+            clip_signature={'plan':key(plan),'episode':number,'source_sha256':source_sha,
+                'export_code':digest(script(self.root,'episode_planner.py'))}
+            cache_name=f'episode_source_{number:03d}'
+            if not self.cached(cache_name,clip_signature,[]):
+                if clip.exists():clip.rename(clip.with_name(clip.stem+'.superseded_'+secrets.token_hex(4)+'.mp4'))
+                self.command(prefix+'准备原片',lo,lo,[self.asr_py,script(self.root,'episode_planner.py'),'export',
+                    '--source',source_file,'--output',clip,'--plan',plan_path,'--episode',str(number),'--receipt',receipt],timeout=14400)
+                self.remember(cache_name,clip_signature,[clip,receipt])
+            child_asr_dir=self.folder/'episode_asr';child_asr_dir.mkdir(exist_ok=True)
+            child_asr=child_asr_dir/f'episode_{number:03d}_{plan_key}.json'
+            save(child_asr,slice_asr(full_asr,episode));clip_sha=digest(clip)
+            child_options={**self.options,'source_language':actual,'split_long_source':False,
+                'episode_max_seconds':episode_max,'voice_pilot_groups':0}
+            child_job={'id':self.name+f'_e{number:03d}_'+plan_key[:8],
+                'title':self.job.get('title','视频译配')+f' · 第{number}集','input_path':str(clip),
+                'source_sha256':clip_sha,'options':child_options,
+                '_episode_asr':{'path':str(child_asr),'sha256':digest(child_asr),
+                    'clip_sha256':clip_sha,'parent_id':self.name}}
+            def update(stage,progress,details=None):
+                safe=dict(details or {});safe.pop('voice_pilot',None)
+                self.emit(prefix+stage,lo+(hi-lo)*progress/100,
+                    {**safe,'episode_index':number,'episode_count':total,**source_language_metadata(actual)})
+            # The enclosing run_job already owns the only heavy-model lock.
+            child_started=time.perf_counter()
+            result=_run_with_recovery(self.root,child_job,update,self.runner,self.cancelled,child_started,0)
+            if result['duration_s']>episode_max+.001:
+                if replan_attempt>=2:
+                    raise RuntimeError('本集自然配音后仍超过时长上限，需检查分集边界；中间结果已保留')
+                smaller=math.floor(episode['duration_s']*episode_max/result['duration_s']*.95*25)/25
+                if smaller<1:raise RuntimeError('无法在正常语速下满足分集时长，需要检查台词')
+                save(self.folder/f'episode_replan_{replan_attempt+1}.json',{
+                    'reason':'natural_dubbing_exceeds_episode_max','output_duration_s':result['duration_s'],
+                    'source_duration_s':episode['duration_s'],'new_source_window_max':smaller,
+                    'source_plan':plan,'originals_preserved':True})
+                self.emit('按实际中文时长缩短分集',lo)
+                return self.process_episodes(config,source_file,source_sha,probe,duration,track,
+                    requested_language,episode_max,smaller,replan_attempt+1)
+            public_dir=self.folder/'outputs'/f'episode_{number:03d}';public_dir.mkdir(parents=True,exist_ok=True)
+            for item in result['artifacts']:
+                origin=Path(item['path']).resolve()
+                if not origin.is_relative_to(self.root/'jobs'/child_job['id']) or digest(origin)!=item['sha256']:
+                    raise RuntimeError('分集导出文件来源或校验不符')
+                if item['kind']=='video' and origin.stat().st_size>=50_000_000:
+                    raise RuntimeError('分集视频超过50MB，未发布')
+                target=public_dir/origin.name
+                if target.exists() and digest(target)!=item['sha256']:
+                    target.rename(target.with_name(target.stem+'.superseded_'+secrets.token_hex(4)+target.suffix))
+                if not target.exists():
+                    try:os.link(origin,target)
+                    except OSError:shutil.copyfile(origin,target)
+                artifacts.append({**item,'path':str(target),'label':f'第{number}集 · '+item['label']})
+            summaries.append({'episode_index':number,'source_start_s':episode['source_start_s'],
+                'source_end_s':episode['source_end_s'],'source_duration_s':episode['duration_s'],
+                'duration_s':result['duration_s'],**source_language_metadata(actual),'human_reviewed':False})
+            children.append({'job':child_job['id'],'metrics':result.get('metrics',{}),**summaries[-1]})
+            save(self.folder/'episode_progress.json',{'plan_sha256':key(plan),'completed_episodes':number,
+                'episode_count':total,'episodes':summaries,'human_reviewed':False})
+        self.metrics.update(wall_seconds=time.perf_counter()-self.started,source_duration_s=duration,
+            output_duration_s=sum(e['duration_s'] for e in summaries),episode_count=total,episodes=children,
+            full_source_asr_runs=self.metrics.get('full_source_asr_runs',0),
+            episode_asr_reused=True,heavy_models_serial=True,**source_language_metadata(actual))
+        self.metrics['duration_replan_attempts']=replan_attempt
+        save(self.folder/'web_pipeline_metrics.json',self.metrics)
+        self.emit('全部分集机器草稿已完成',100,{'episode_count':total})
+        return {'artifacts':artifacts,'duration_s':self.metrics['output_duration_s'],
+            'episode_count':total,'episodes':summaries,**source_language_metadata(actual),
+            'warnings':self.warnings,'metrics':self.metrics,'human_reviewed':False,'status':'machine_reviewed_draft'}
+
     def resolve_native_audio(self,native_manifest,grouped=False):
         """Resolve an explicit scoped receipt on CPU; retain actual TTS metrics."""
         selection=self.folder/'native_audio_selections.json'
@@ -808,8 +956,18 @@ class Flow:
         inputs=self.root/'inputs'/self.name;inputs.mkdir(parents=True,exist_ok=True)
         existing=list(inputs.glob('source.*'));video=next((p for p in existing if p.suffix.lower() in ('.mp4','.mkv','.webm','.mov')),None)
         if video:return video
-        self.command('下载视频到本机',0,5,[tool,'--ignore-config','--no-playlist','--no-overwrites','--newline','--js-runtimes','node',
-            '--format','bv*[height<=720]+ba/b[height<=720]/b','--merge-output-format','mp4','--output',str(inputs/'source.%(ext)s'),'--',url],timeout=3600)
+        reserve=math.ceil(float(read(self.root/'config/local.json').get('minimum_free_gib',8))*1024**3)
+        margin=512*1024**2
+        def low_space():return shutil.disk_usage(self.root).free<reserve+margin
+        if low_space():raise RuntimeError('空间不足以接收视频，需先腾出空间；未删除已有素材')
+        budget=shutil.disk_usage(self.root).free-reserve-margin
+        try:
+            self.command('下载视频到本机',0,5,[tool,'--ignore-config','--no-playlist','--no-overwrites','--newline','--js-runtimes','node',
+                '--max-filesize',str(budget),'--format','bv*[height<=720]+ba/b[height<=720]/b','--merge-output-format','mp4',
+                '--output',str(inputs/'source.%(ext)s'),'--',url],timeout=3600,should_abort=low_space)
+        except RuntimeError as error:
+            if low_space():raise RuntimeError('下载时可用空间不足，已停止并保留原素材，请腾出空间后重试') from error
+            raise
         video=next((p for p in inputs.glob('source.*') if p.suffix.lower() in ('.mp4','.mkv','.webm','.mov')),None)
         if video is None:raise RuntimeError('下载结束但未找到完整视频文件')
         return video
@@ -824,12 +982,22 @@ class Flow:
         elapsed={};records={};failure=None
         asr=self.folder/'segments.asr.json'
         signature={'audio_sha':digest(self.folder/'audio/asr16k.wav'),
-            'model':config['asr_model'],'code':digest(script(self.root,'asr.py'))}
+            'model':config['asr_model'],'code':digest(script(self.root,'asr.py')),
+            'source_language':normalize_language(self.options.get('source_language','de'))}
+        prepared=self.job.get('_episode_asr')
+        if prepared:
+            path=Path(prepared['path']).resolve()
+            parent=self.root/'jobs'/prepared['parent_id']
+            if (not path.is_relative_to(parent/'episode_asr') or not path.is_file()
+                    or digest(path)!=prepared['sha256']
+                    or prepared['clip_sha256']!=digest(Path(self.job['input_path']))):
+                raise RuntimeError('分集原文与当前视频绑定不符，未复用识别结果')
+            signature['prepared_asr_sha256']=prepared['sha256']
         def state(name,value):
             with self._state_lock:
                 states[name]=value
                 done=sum(v in ('complete','cached') for v in states.values())
-                self.emit('分析德语台词与场景声音',10+15*done,
+                self.emit('分析原文台词与场景声音',10+15*done,
                     {'parallel_stages':dict(states),'asr_device':'cpu','separation_device':'mps',
                      'workers':2,'concurrent_tts':False})
         def worker(name):
@@ -839,11 +1007,14 @@ class Flow:
                 if name=='asr':
                     hit=self.cached('asr',signature,[])
                     if not hit:
-                        self.command('识别德语台词',10,25,[self.asr_py,script(self.root,'asr.py'),
-                            '--input',self.folder/'audio/asr16k.wav','--model',config['asr_model'],'--output',asr],
-                            env={'OMP_NUM_THREADS':'2','MKL_NUM_THREADS':'2','OPENBLAS_NUM_THREADS':'2'},
-                            should_abort=abort.is_set,report_progress=False)
-                    if not read(asr).get('segments'):raise RuntimeError('没有识别到可配音的德语台词')
+                        if prepared:save(asr,read(path))
+                        else:
+                            self.command('识别原文台词',10,25,[self.asr_py,script(self.root,'asr.py'),
+                                '--input',self.folder/'audio/asr16k.wav','--model',config['asr_model'],'--output',asr,
+                                '--language',signature['source_language']],
+                                env={'OMP_NUM_THREADS':'2','MKL_NUM_THREADS':'2','OPENBLAS_NUM_THREADS':'2'},
+                                should_abort=abort.is_set,report_progress=False)
+                    if not read(asr).get('segments'):raise RuntimeError('没有识别到可配音的原文台词')
                     record={'name':'asr','signature':signature,'outputs':[asr],'cache_hit':hit}
                 else:
                     record=self.separate(remember_result=False,report_progress=False,should_abort=abort.is_set)
@@ -1056,15 +1227,16 @@ def check_speakers(root,folder):
 
 def translate_job(root,folder):
     from proxy_client import translate_segments,ProxyTransportError,emit_transport_failure
-    rows=read(folder/'translation/input.json')['segments']
+    data=read(folder/'translation/input.json');rows=data['segments']
+    language=normalize_language(data.get('source_language','de'),allow_auto=False)
     def progress(done,total):print(json.dumps({'event':'translation_progress','completed':done,'total':total}),flush=True)
     try:
-        updated,report=translate_segments(rows,root,progress=progress,diagnostic_dir=folder/'translation/diagnostics')
+        updated,report=translate_segments(rows,root,progress=progress,diagnostic_dir=folder/'translation/diagnostics',source_language=language)
     except ProxyTransportError as error:
         emit_transport_failure(error.failure_metadata,event='proxy_stage_failure')
         raise
     validate_translations(rows,updated,report)
-    save(folder/'segments.json',{'schema_version':2,'segments':updated,'human_reviewed':False,
+    save(folder/'segments.json',{'schema_version':2,'segments':updated,**source_language_metadata(language),'human_reviewed':False,
         'translation_status':'machine_second_pass_complete_draft','review_method':report['review_method']})
     report.update(job=folder.name,source_segments_sha256=digest(folder/'segments.json'),
         source_speakers_sha256=digest(folder/'speakers.json'))
@@ -1075,7 +1247,8 @@ def regroup_job(root,folder):
     assignments=folder/'speaker_assignments.json';plan=folder/'segments.plan.json'
     original=read(assignments if assignments.is_file() else plan)
     if not (folder/'segments.plan.bounded.json').exists():save(folder/'segments.plan.bounded.json',read(plan))
-    grouped=regroup_sentence_rows(original['segments'],read(folder/'source.json')['duration_s'])
+    source=read(folder/'source.json')
+    grouped=regroup_sentence_rows(original['segments'],source['duration_s'],source_language=source.get('source_language','de'))
     save(plan,grouped)
     save(folder/'sentence_group_receipt.json',{'schema':'german_sentence_group_receipt_v1',
         'input_path':str((assignments if assignments.is_file() else folder/'segments.plan.bounded.json').resolve()),

@@ -152,16 +152,16 @@
     $("start-button").disabled = value;
     $("start-button").classList.toggle("busy", value);
     $("start-button").querySelector(".button-label").textContent = label || (value ? "正在提交" : "开始译配");
-    for (const id of ["video-file", "source-url", "job-title", "upload-tab", "url-tab", "remove-file"]) $(id).disabled = value;
+    for (const id of ["video-file", "source-url", "source-language", "job-title", "upload-tab", "url-tab", "remove-file"]) $(id).disabled = value;
     $("dropzone").setAttribute("aria-disabled", String(value));
     $("submission-progress").hidden = !value;
     if (!value) $("upload-percent").textContent = "";
   }
 
-  function upload(file) {
+  function upload(file, sourceLanguage) {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
-      xhr.open("POST", "/api/jobs/upload?name=" + encodeURIComponent(file.name));
+      xhr.open("POST", "/api/jobs/upload?name=" + encodeURIComponent(file.name) + "&source_language=" + encodeURIComponent(sourceLanguage));
       xhr.setRequestHeader("Content-Type", "application/octet-stream");
       xhr.timeout = 30 * 60 * 1000;
       xhr.upload.onprogress = (event) => {
@@ -197,9 +197,9 @@
     $("submission-text").textContent = source.kind === "upload" ? "正在上传视频" : "正在提交视频链接";
     busy(true, source.kind === "upload" ? "正在上传" : "正在提交");
     try {
-      const response = source.kind === "upload" ? await upload(source.file) : await request("/api/jobs", {
+      const response = source.kind === "upload" ? await upload(source.file, source.sourceLanguage || "auto") : await request("/api/jobs", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ source_url: source.url, title: source.title || "" }),
+        body: JSON.stringify({ source_url: source.url, title: source.title || "", source_language: source.sourceLanguage || "auto" }),
       });
       const job = parsedJob(response);
       const id = job?.id || response?.job_id;
@@ -321,7 +321,17 @@
     const artifacts = (Array.isArray(job.artifacts) ? job.artifacts : []).filter((a) => a && typeof a === "object")
       .map((a) => ({ ...a, safeUrl: artifactUrl(a.url) })).filter((a) => a.safeUrl);
     for (const item of artifacts) item.type = artifactType(item, item.safeUrl);
-    const preview = artifacts.find((a) => a.type === "video") || artifacts.find((a) => a.type === "audio");
+    const videos = artifacts.filter((a) => a.type === "video");
+    const chosenUrl = $("episode-select").value;
+    $("episode-preview").hidden = videos.length < 2;
+    $("episode-select").replaceChildren();
+    for (const video of videos) {
+      const option = create("option", "", video.label || "分集视频");
+      option.value = video.safeUrl;
+      option.selected = chosenUrl === video.safeUrl;
+      $("episode-select").append(option);
+    }
+    const preview = videos.find((a) => a.safeUrl === $("episode-select").value) || videos[0] || artifacts.find((a) => a.type === "audio");
     const key = preview ? String(job.id) + ":" + preview.type + ":" + preview.safeUrl : "";
     if (key !== state.previewKey) {
       resetPreview();
@@ -480,7 +490,7 @@
     if (state.busy) return;
     if (state.mode === "upload") {
       if (!state.file) { formError("请先选择一段本地视频。"); $("dropzone").focus(); return; }
-      submitSource({ kind: "upload", file: state.file });
+      submitSource({ kind: "upload", file: state.file, sourceLanguage: $("source-language").value });
     } else {
       let url;
       try {
@@ -491,8 +501,11 @@
         $("source-url").focus();
         return;
       }
-      submitSource({ kind: "url", url: url.href, title: $("job-title").value.trim() });
+      submitSource({ kind: "url", url: url.href, title: $("job-title").value.trim(), sourceLanguage: $("source-language").value });
     }
+  });
+  $("episode-select").addEventListener("change", () => {
+    if (state.selectedJob) renderArtifacts(state.selectedJob);
   });
   for (const name of ["upload", "url"]) {
     $(name + "-tab").addEventListener("click", () => setMode(name));

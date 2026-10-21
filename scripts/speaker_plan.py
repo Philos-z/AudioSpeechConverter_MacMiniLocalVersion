@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import re
 import sys
+import secrets
 
 import numpy as np
 import soundfile as sf
@@ -31,12 +32,15 @@ def main():
     data=json.loads(original.read_text()); rows=data['segments']
     cache=job/'speaker_embeddings.npz'
     fingerprint=hashlib.sha256(original.read_bytes()).hexdigest()
+    valid_cache=False
     if cache.exists():
-        cached=np.load(cache)
-        if str(cached['fingerprint'])!=fingerprint:
-            raise ValueError('EMBEDDING_INPUT_CHANGED')
-        vectors=cached['vectors']
-    else:
+        with np.load(cache) as cached:
+            previous_fingerprint=str(cached['fingerprint'])
+            if previous_fingerprint==fingerprint:
+                vectors=cached['vectors'];valid_cache=True
+        if not valid_cache:
+            cache.rename(cache.with_name('speaker_embeddings.superseded_'+secrets.token_hex(6)+'.npz'))
+    if not valid_cache:
         import torch
         import torchaudio
         torch.set_num_threads(2)

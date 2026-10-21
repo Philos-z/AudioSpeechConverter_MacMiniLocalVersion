@@ -19,7 +19,7 @@
     <section class="intro" aria-labelledby="page-title">
       <p class="eyebrow">听见内容的另一种表达</p>
       <h1 id="page-title">让好内容，<br class="mobile-break">换一种语言继续讲。</h1>
-      <p class="intro-copy">放入视频，生成中文配音、背景合成与中德双语字幕。<br class="desktop-break">先看审稿预览，再试听确认。</p>
+      <p class="intro-copy">放入外语视频，生成中文配音、背景合成与双语字幕。<br class="desktop-break">长视频自动分集，先看审稿预览，再试听确认。</p>
     </section>
 
     <div class="service-notice" id="service-notice" role="status" hidden><span class="notice-mark" aria-hidden="true">i</span><p id="service-notice-text"></p><button class="text-button" id="reconnect-button" type="button">重新连接</button></div>
@@ -37,7 +37,7 @@
               <div class="upload-symbol"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="M16 21V7m-5 5 5-5 5 5M7 20v5h18v-5"/></svg></div>
               <p class="drop-title" id="drop-title">把视频拖到这里</p>
               <p class="drop-copy" id="drop-copy">或点击选择本地文件</p>
-              <span class="file-hint" id="file-hint">MP4、MOV、MKV · 德语横屏 16:9 · 最长30分钟 · 1GB以内</span>
+              <span class="file-hint" id="file-hint">MP4、MOV、MKV · 横屏 16:9 · 1GB以内</span>
               <input id="video-file" type="file" accept="video/*,.mkv,.mov,.mp4,.m4v,.webm,.avi,.ts" hidden>
             </div>
             <div class="file-selected" id="file-selected" hidden><div class="file-glyph" aria-hidden="true">▶</div><div class="file-detail"><strong id="selected-name"></strong><span id="selected-size"></span></div><button class="icon-button" id="remove-file" type="button" aria-label="移除已选视频">×</button></div>
@@ -46,14 +46,23 @@
           <div id="url-panel" role="tabpanel" aria-labelledby="url-tab" hidden>
             <label class="field-label" for="source-url">视频链接</label>
             <input class="text-input" id="source-url" type="url" inputmode="url" autocomplete="off" placeholder="https://…">
-            <p class="field-help">粘贴可以访问的视频页面链接。当前支持德语、16:9 横屏，最长30分钟。</p>
+            <p class="field-help">粘贴可以访问的横屏 16:9 视频页面链接。长视频将按停顿自动分集。</p>
             <label class="field-label spaced-label" for="job-title">任务名称 <span>可选</span></label>
             <input class="text-input" id="job-title" type="text" maxlength="120" autocomplete="off" placeholder="给这段视频起个名字">
           </div>
 
+          <label class="field-label spaced-label" for="source-language">视频原语言</label>
+          <select class="text-input" id="source-language" aria-describedby="language-help">
+            <option value="auto">自动识别（推荐）</option><option value="de">德语</option>
+            <option value="en">英语</option><option value="fr">法语</option><option value="es">西班牙语</option>
+            <option value="it">意大利语</option><option value="pt">葡萄牙语</option><option value="ja">日语</option>
+            <option value="ko">韩语</option><option value="ru">俄语</option><option value="ar">阿拉伯语</option>
+          </select>
+          <p class="field-help" id="language-help">其他语言也可选择自动识别；识别结果交给文字服务翻译并复核。每集最多30分钟，视频小于50MB。</p>
+
           <details class="output-settings">
             <summary><span>输出设置</span><span class="settings-summary">保留原比例 · 540p <span aria-hidden="true">⌄</span></span></summary>
-            <div class="settings-body"><div class="setting-chips"><span>保留原比例</span><span>540p 轻量成片</span><span>自然中文</span><span>中德双语字幕</span><span>背景清晰</span></div><p>默认运行完整流程。保留画面原有方向，使用较大的双语字幕，方便手机观看。</p></div>
+            <div class="settings-body"><div class="setting-chips"><span>保留原比例</span><span>540p 轻量成片</span><span>自然中文</span><span>中文＋原文字幕</span><span>每集小于50MB</span></div><p>长视频在可靠停顿处分集，每集最多30分钟，逐集处理。保留原文字幕，并按实际中文配音定位。</p></div>
           </details>
 
           <div class="submission-progress" id="submission-progress" hidden><div class="progress-caption"><span id="submission-text">正在提交素材</span><span id="upload-percent"></span></div><progress id="upload-progress" max="100" value="0"></progress></div>
@@ -73,6 +82,7 @@
           <h3 class="detail-job-title" id="detail-title"></h3>
           <div class="job-progress" id="job-progress"><div class="progress-caption"><span id="detail-stage">等待处理</span><strong id="detail-percent">0%</strong></div><progress id="detail-progress" max="100" value="0"></progress><p class="progress-note" id="progress-note">任务进度由处理服务实时更新。</p></div>
           <div class="job-error" id="job-error" hidden><strong id="job-error-title">这次处理没有完成</strong><p id="job-error-copy"></p><button class="secondary-button compact" id="retry-button" type="button">重新提交素材</button></div>
+          <div id="episode-preview" hidden><label class="field-label" for="episode-select">选择分集预览</label><select class="text-input" id="episode-select"></select></div>
           <div class="media-preview" id="media-preview" hidden><video id="result-video" controls playsinline preload="metadata" hidden></video><audio id="result-audio" controls preload="metadata" hidden></audio></div>
           <div class="downloads" id="downloads" hidden><p class="download-label">下载审稿预览</p><div class="download-links" id="download-links"></div></div>
           <div class="detail-footer"><span id="detail-date"></span><button class="text-button danger" id="cancel-button" type="button" hidden>取消任务</button></div>
