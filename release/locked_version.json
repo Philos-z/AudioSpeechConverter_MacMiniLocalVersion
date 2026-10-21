@@ -1,7 +1,7 @@
 {
   "schema": "source_only_locked_release_v1",
   "date": "2026-10-21",
-  "origin_deployment": "20261021_113927",
+  "origin_deployment": "20261021_154425",
   "production_profile": "hybrid-gpt-preserve-25-pad-eager",
   "cfm_steps": 25,
   "seed": 42,
@@ -35,7 +35,7 @@
     "task state/receipts/reports except model identity lock",
     "model weights/cache/virtual environments/bundled binaries"
   ],
-  "validation_scope": "Source and synthetic short media/HTTP tests; no new machine model setup or full production inference was performed.",
+  "validation_scope": "62 current source tests; actual short grouped render; full 14m10.84s rebrand below50MB with unchanged AAC packets/subtitles/EDL and complete decode. No new30min source listening claim.",
   "files": [
     {
       "path": ".gitattributes",
@@ -44,8 +44,8 @@
     },
     {
       "path": ".gitignore",
-      "bytes": 1028,
-      "sha256": "8ddbb8da05a10b3e571e07c8932585f4c200ae6b749a8007177c2c69751c160a"
+      "bytes": 1062,
+      "sha256": "4371c241d355355ac5cd2d6ccb4f2fbfc59850132db322f7f3abf8974177692c"
     },
     {
       "path": ".gitmodules",
@@ -59,13 +59,18 @@
     },
     {
       "path": "README.md",
-      "bytes": 5107,
-      "sha256": "b79f5bbaf70c407bc1d036fcd45ba5e74e7d1fd538ec606df9ecbc07e35d9447"
+      "bytes": 5625,
+      "sha256": "10f08fa55028e7d3534dc9226c1f0c9486ca7631f0c69c7496477a9821e54990"
     },
     {
       "path": "THIRD_PARTY_NOTICES.md",
       "bytes": 889,
       "sha256": "e9d503a7945575b00f13518114a1b2e35edb280b095f01843b940f2ef747bd9e"
+    },
+    {
+      "path": "assets/philos_club_wordmark.png",
+      "bytes": 29679,
+      "sha256": "ff8217a8ee1994cdfb6c18831c5d4b33909edb56ef9eb565b10f8f084211d5b1"
     },
     {
       "path": "assets/philos_haircut_logo.png",
@@ -74,8 +79,8 @@
     },
     {
       "path": "config/background_bilingual.example.json",
-      "bytes": 287,
-      "sha256": "c74310703c44500cb1169ac672627c92787eddc6d584f5e9dda222b5d6179d45"
+      "bytes": 289,
+      "sha256": "696e9df37444de6e00140485d2e5eca8f6969809ddb2e4fac57760579b0ad63c"
     },
     {
       "path": "config/local.example.json",
@@ -89,8 +94,8 @@
     },
     {
       "path": "config/next_run_profile.example.json",
-      "bytes": 1284,
-      "sha256": "69d667093db64a4447cf79da61d69c5f6363bd4997fb4bccd1a3c33087fb164c"
+      "bytes": 1388,
+      "sha256": "57ee894a3c7e753f5cb236561972f2e4edec16d3a79ebc183e8f626984999603"
     },
     {
       "path": "config/source_scopes.example.json",
@@ -111,6 +116,11 @@
       "path": "docs/LOCAL_DATA.md",
       "bytes": 1185,
       "sha256": "c0d1a50d7727332642903ea21feea21276adb1df8d0b3cc655de0345958f6920"
+    },
+    {
+      "path": "docs/LONG_SOURCE_MULTILINGUAL.md",
+      "bytes": 2642,
+      "sha256": "7cc1fe51361ce35cbd28fdd4dcccb51c9e635d6521610a2f4a47388a18ec763a"
     },
     {
       "path": "reports/models.lock.json",
@@ -134,8 +144,8 @@
     },
     {
       "path": "scripts/asr.py",
-      "bytes": 2025,
-      "sha256": "b39224effc2d86754b26ab3641b37cb13a38bc4b40e89e06867549041777002e"
+      "bytes": 2841,
+      "sha256": "41507d88084773a6090a4fb1aef29a17ca676c6dab1bea5f3e7d8049b1b7855a"
     },
     {
       "path": "scripts/assemble_compact_timeline.py",
@@ -153,14 +163,19 @@
       "sha256": "bc5201fcf86d457bc34e676001463a792b7d21136b125b0fc542aadc3476c34f"
     },
     {
+      "path": "scripts/build_wordmark.py",
+      "bytes": 1013,
+      "sha256": "b67708807b01f373a26b1673f6996bebaa5103a2319d921deb397a67c3af8fe9"
+    },
+    {
       "path": "scripts/comma_chunk_tts.py",
       "bytes": 14118,
       "sha256": "fde5b3759eb0df564548f379b3911c7d445bf2c6e015840df4b8eabce7675cb3"
     },
     {
       "path": "scripts/compact_edit.py",
-      "bytes": 20161,
-      "sha256": "b692f7d8c7e0999942fb67be2a2a25d589345fd695ae84ee0c82cf9f901052c9"
+      "bytes": 20401,
+      "sha256": "b8b46ebab8388657f0572212c03e45b1f14223e81f430481aa4a438f6b498f1e"
     },
     {
       "path": "scripts/continuous_tts.py",
@@ -189,8 +204,8 @@
     },
     {
       "path": "scripts/export_bilingual.py",
-      "bytes": 3839,
-      "sha256": "16125725152203ba92cb724dac5d78a470881c85b220b28add52f53dbc707bcc"
+      "bytes": 4175,
+      "sha256": "0a536d3f713599c48a54277f8c56ddfdfedc9be6a74bf94e6436a22e59191674"
     },
     {
       "path": "scripts/export_size.py",
@@ -209,8 +224,8 @@
     },
     {
       "path": "scripts/incremental_media.py",
-      "bytes": 17662,
-      "sha256": "484bc7198be649455c279864b5e841d8c00ad5102e094b57fac828df9fdb154c"
+      "bytes": 17839,
+      "sha256": "c6c24466f070f04bedd22b8ad7536c303afe3883796a37039bdb9621cdaff2d1"
     },
     {
       "path": "scripts/mix_compact.py",
@@ -273,6 +288,11 @@
       "sha256": "cfb6aa33b1c4fde3446cf4e875d7bd44a5b47d4d1f6591c4c4d77b5da69ccf33"
     },
     {
+      "path": "scripts/rebrand_export.py",
+      "bytes": 5044,
+      "sha256": "5be1684678677db2daa98e5ac006fd2521a24251e285f02578191c608c7c1bcf"
+    },
+    {
       "path": "scripts/remix_background.py",
       "bytes": 5822,
       "sha256": "d6478d3dc97dfeabe65678c2572bec33b85d9c625e77081019874039334fa4fe"
@@ -299,8 +319,8 @@
     },
     {
       "path": "scripts/speaker_plan.py",
-      "bytes": 7551,
-      "sha256": "af5a66584c28da0c81d40fdbb9814a0f8a35fd6e25888b0bc36a28d18965950e"
+      "bytes": 7770,
+      "sha256": "6575834baf6727e55b64c12b8eb0468e1232a44df234e4fcba49d187d1199fc3"
     },
     {
       "path": "scripts/torch_vocoder_bridge.py",
@@ -334,8 +354,8 @@
     },
     {
       "path": "scripts/verify_compact.py",
-      "bytes": 13306,
-      "sha256": "1ec2d73c1b22e407c56d15745e41ad6b31c3445c0b47eafa8dc6c1eacb9891ba"
+      "bytes": 13399,
+      "sha256": "ed001942b9565e0e701d2febe1e6d05cfe67100c26d4b410e4734c69cbd67f5c"
     },
     {
       "path": "scripts/verify_episode.py",
@@ -363,14 +383,34 @@
       "sha256": "7bc53663d3dd5939dcdbc5132c89b4214966e49f8a0c40422ad45e52ba72ffee"
     },
     {
+      "path": "tests/test_episode_planner.py",
+      "bytes": 16564,
+      "sha256": "4dabe24ba7f9e5aded4358f263149414e8367651ad8dd8cf11df62f199863974"
+    },
+    {
       "path": "tests/test_export_size.py",
       "bytes": 11881,
       "sha256": "05f178db6c2ad1fbd65a57155d33d698d2f5bf68f563e008615ace3d439e75ee"
     },
     {
+      "path": "tests/test_long_source_audit.py",
+      "bytes": 9941,
+      "sha256": "a54ae3042f7df19e6622439dbc37377dd093cf0f4eda56ee6b92280e6af732ef"
+    },
+    {
+      "path": "tests/test_long_source_pipeline.py",
+      "bytes": 6092,
+      "sha256": "77d7004008c4864aea9832887b5745adb09ef65b637b1f752cdac6f51366f6d0"
+    },
+    {
       "path": "tests/test_media_contract.py",
       "bytes": 2666,
       "sha256": "c5e9eb3dca059d543cea6ef4ecea442be3165f8c91a4481b92e47ac678fe4bec"
+    },
+    {
+      "path": "tests/test_source_language.py",
+      "bytes": 9158,
+      "sha256": "69b1cefe178d6dd7dacc730be98622a765a0790b628ac78a4040436e113d81b1"
     },
     {
       "path": "tests/test_source_scope_privacy.py",
@@ -381,6 +421,11 @@
       "path": "web/early_voice_pilot.py",
       "bytes": 15861,
       "sha256": "ce3592d7eb6d52d4f4833f1a89dbd9cfa71c4fe84c7556519fecc795d44937bf"
+    },
+    {
+      "path": "web/episode_planner.py",
+      "bytes": 28649,
+      "sha256": "aa2560aa9988f92bf31e16d2cf236a42e765feaab86e5c80407171248f62604b"
     },
     {
       "path": "web/generic_group_alignment.py",
@@ -394,8 +439,8 @@
     },
     {
       "path": "web/group_compact_adapter.py",
-      "bytes": 38261,
-      "sha256": "4da8527077248e80cbfaf4f02cb73ee7ecd3f8dfa658e84093ed25d4a630c354"
+      "bytes": 38350,
+      "sha256": "4e897acd70f3688ab22a932245d1a794e54d29e624b7bb41496291ec3efcfe1a"
     },
     {
       "path": "web/natural_compact_adapter.py",
@@ -419,13 +464,13 @@
     },
     {
       "path": "web/pipeline.py",
-      "bytes": 76863,
-      "sha256": "982325072fb3832c23ae0f93f18dbf43b1fd03992fc772147c1b3d6877426c5e"
+      "bytes": 90890,
+      "sha256": "26521819b36bd3c17ea36e4cf47becb956aac1e04492a77f5ad8f86928705875"
     },
     {
       "path": "web/proxy_client.py",
-      "bytes": 38828,
-      "sha256": "555fcb0d225d7737174189c18b3f755df9bd9da8d2e4d45fcebbe9ed351ffa15"
+      "bytes": 45629,
+      "sha256": "b9c9c71b3376112a4e3370345d11097b62a639d35bd69dcaa459e5b9e5ba4bcb"
     },
     {
       "path": "web/recovery.py",
@@ -444,8 +489,8 @@
     },
     {
       "path": "web/server.py",
-      "bytes": 40078,
-      "sha256": "da8e62d836b377dd2798bf1bc470b794c52427043c83b899d2f08ac1f29ac4a8"
+      "bytes": 41138,
+      "sha256": "eb3f3580d6ad3c7207f0e365c3fa35d8ff36fa71abfbb954531614303b3fced2"
     },
     {
       "path": "web/service.py",
@@ -453,14 +498,19 @@
       "sha256": "ed1702835c92b2aa6addc83f6569b0736c432a341b9ad6363ebd6af8865aff29"
     },
     {
+      "path": "web/source_language.py",
+      "bytes": 3306,
+      "sha256": "2352b4925b04795f127976c697f9d10cbf3688fbfe738c86c206f44c45ab6ae5"
+    },
+    {
       "path": "web/static/app.js",
-      "bytes": 27104,
-      "sha256": "92d294e6addce139dc367fb819b8e5ac0358c31154f303c5f40e9aeb93503784"
+      "bytes": 27980,
+      "sha256": "eeaf4f29b2d822557561facdbd6b139648864eaae564807c3e97f906a50d43e3"
     },
     {
       "path": "web/static/index.html",
-      "bytes": 8751,
-      "sha256": "4850f89db193b378281011948b4c5be2cbc6616fb69358b23954e6f98d11206a"
+      "bytes": 9821,
+      "sha256": "6f1e4e706250f3ac341d30e93272819c5866dc2d06f41952bacfe332877adf27"
     },
     {
       "path": "web/static/style.css",
@@ -474,13 +524,28 @@
     },
     {
       "path": "web/verify_natural_compact.py",
-      "bytes": 16311,
-      "sha256": "ba150479b7837bacb413a7a18d9745f227bdc3ababd13c0b9233a439ec82feb7"
+      "bytes": 16404,
+      "sha256": "25b7e287cb75b131adfa8b8b0e6eb768292e8c8f7b6316efb4b6bb848ec03369"
     },
     {
       "path": "启动局域网配音.command",
       "bytes": 194,
       "sha256": "7d78ba82c3b72a97fd0da84a89f95981777f91d496f7226d99fc14eade7efcdd"
     }
-  ]
+  ],
+  "release_revision": "Philos.club watermark update",
+  "baseline_tag": "locked-2026-10-21",
+  "current_release_tag": "philos-club-2026-10-21",
+  "source_language_policy": "automatic_detection_and_proxy_two_pass",
+  "episode_max_seconds": 1800,
+  "watermark": {
+    "asset": "assets/philos_club_wordmark.png",
+    "width_px": 144,
+    "height_px": 25,
+    "position": [
+      16,
+      24
+    ],
+    "opacity": 0.55
+  }
 }

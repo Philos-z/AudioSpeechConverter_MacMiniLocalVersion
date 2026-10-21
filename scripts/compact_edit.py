@@ -22,6 +22,12 @@ FONT = '/System/Library/Fonts/Supplemental/Arial Unicode.ttf'
 FPS, WIDTH, HEIGHT = 25, 960, 540
 
 
+def logo_style(path):
+    current=Path(path).name=='philos_club_wordmark.png'
+    return {'width_px':144 if current else 84,'opacity':.55,'position':[16,24],
+            'brand':'Philos.club' if current else 'legacy'}
+
+
 def _json_write(path, value):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -241,7 +247,8 @@ def _render_locked(edl, mixed_wav, output_path, ass_path, logo_path, work_dir):
     if abs(audio.frames/audio.samplerate-edl['duration_s'])>.04:
         raise ValueError('Mixed WAV must follow exact EDL duration')
     logo=Image.open(logo_path).convert('RGBA')
-    logo=logo.resize((84,max(1,round(logo.height*84/logo.width))),Image.Resampling.LANCZOS)
+    style=logo_style(logo_path);width=style['width_px']
+    logo=logo.resize((width,max(1,round(logo.height*width/logo.width))),Image.Resampling.LANCZOS)
     logo.putalpha(logo.getchannel('A').point(lambda x:round(x*.55)))
     logo_out=work/'compact_logo.png';logo.save(logo_out)
     build_portrait_ass(edl,ass_path)
@@ -300,7 +307,7 @@ def _render_locked(edl, mixed_wav, output_path, ass_path, logo_path, work_dir):
                      'current_output_time_s':edl['duration_s'],'current_fraction':1.,'updated_at_unix':time.time()})
     _json_write(progress_path,progress)
     return {'output':str(output.resolve()),'duration_s':edl['duration_s'],'frames':edl['frames'],
-            'segments':edl['speech_segments'],'logo':{'width_px':84,'opacity':.55,'position':[16,24]},
+            'segments':edl['speech_segments'],'logo':style,
             'picture_box':[0,0,960,540],'burned_bilingual_subtitles':True,
             'encoder':size_receipt.get('encoder','h264_videotoolbox'),
             'video_bitrate_target_bps':size_receipt.get('video_bitrate_target_bps',850000),
@@ -325,7 +332,7 @@ def main():
     if args.render:
         if not args.mixed_wav:p.error('--render requires --mixed-wav aligned to EDL')
         report=render(edl,args.mixed_wav,args.output or out/'landscape_compact_zh.mp4',out/'compact_bilingual.ass',
-                      args.logo or args.root/'assets/philos_haircut_logo.png',out/'render_cache')
+                      args.logo or args.root/'assets/philos_club_wordmark.png',out/'render_cache')
         _json_write(out/'compact_export.json',report)
 
 

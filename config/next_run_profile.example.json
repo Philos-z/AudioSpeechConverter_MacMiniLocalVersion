@@ -52,6 +52,9 @@
     "position": [
       16,
       24
-    ]
+    ],
+    "asset": "assets/philos_club_wordmark.png",
+    "width_px_at_960": 144,
+    "brand": "Philos.club"
   }
 }

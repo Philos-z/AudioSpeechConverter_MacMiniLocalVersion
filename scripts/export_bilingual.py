@@ -12,10 +12,13 @@ from video import confined, probe
 def main():
     p=argparse.ArgumentParser();p.add_argument('--root',type=Path,required=True)
     p.add_argument('--job',required=True);p.add_argument('--variant',default='bg_bilingual_v2')
-    p.add_argument('--logo-file',type=Path);p.add_argument('--logo-width',type=int,default=112)
+    p.add_argument('--logo-file',type=Path);p.add_argument('--logo-width',type=int)
     p.add_argument('--logo-opacity',type=float,default=.55)
     p.add_argument('--no-ai-label',action='store_true')
     args=p.parse_args();root=args.root.resolve()
+    if args.logo_file is None:args.logo_file=root/'assets/philos_club_wordmark.png'
+    brand=args.logo_file.name=='philos_club_wordmark.png'
+    if args.logo_width is None:args.logo_width=144 if brand else 112
     if not all(re.fullmatch(r'[A-Za-z0-9_-]{1,60}',s) for s in [args.job,args.variant]):p.error('Invalid task/variant')
     if not 40<=args.logo_width<=320 or not 0<args.logo_opacity<=1:p.error('Invalid logo settings')
     job=confined(root,'jobs/'+args.job);out=job/'outputs'/args.variant
@@ -31,9 +34,11 @@ def main():
     if args.logo_file:
         logo=confined(root,str(args.logo_file.resolve().relative_to(root)))
         command+=['-loop','1','-i',logo]
+        position=[16,24] if brand else [20,18]
         filters=(f"[2:v]scale={args.logo_width}:-1:flags=lanczos,format=rgba,colorchannelmixer=aa={args.logo_opacity}[logo];"
-            f"[0:v][logo]overlay=20:18:shortest=1,ass=filename='{ass_filter}'[v]")
-        logo_report={'source':str(logo),'width_px':args.logo_width,'opacity':args.logo_opacity,'position':[20,18]}
+            f"[0:v][logo]overlay={position[0]}:{position[1]}:shortest=1,ass=filename='{ass_filter}'[v]")
+        logo_report={'source':str(logo),'width_px':args.logo_width,'opacity':args.logo_opacity,'position':position,
+                     'brand':'Philos.club' if brand else 'legacy'}
     elif not args.no_ai_label:
         command+=['-loop','1','-i',job/'ai_label.png']
         filters=f"[0:v][2:v]overlay=24:20:shortest=1,ass=filename='{ass_filter}'[v]"

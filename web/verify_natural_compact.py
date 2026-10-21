@@ -198,7 +198,8 @@ def verify(edl_path,video_path,ass_path,mixed_wav=None,export_report=None,
     if export_report:
         export=json.loads(Path(export_report).read_text())
         _assert(export['burned_bilingual_subtitles'] is True,'SUBTITLES_NOT_BURNED_IN_EXPORT_SETTINGS')
-        _assert(export['logo']['width_px']==84 and abs(export['logo']['opacity']-.55)<1e-6,'LOGO_SETTINGS_MISMATCH')
+        expected_width=144 if export['logo'].get('brand')=='Philos.club' else 84
+        _assert(export['logo']['width_px']==expected_width and abs(export['logo']['opacity']-.55)<1e-6,'LOGO_SETTINGS_MISMATCH')
         checks['export_settings']=export
     if not skip_levels:
         measurement=_call([FFMPEG,'-hide_banner','-threads','2','-i',video,'-map','0:a:0',

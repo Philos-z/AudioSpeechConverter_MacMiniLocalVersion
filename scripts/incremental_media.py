@@ -108,10 +108,13 @@ def snapshot(root,job,output,profile_override=None):
             'origin':'existing verified mix_report.json; not remeasured','target_sample_rate':48000,
             'target_channels':2,'fade_s':.002}
     edl=read(out/'edit_decisions.json')
+    export=read(out/'compact_export.json')
+    club=export.get('logo',{}).get('brand')=='Philos.club'
     assets={key:file_record(path) for key,path in {'source_video':edl['source_input'],
-        'independent_background':mix['background_source'],'logo':root/'assets/philos_haircut_logo.png'}.items()}
+        'independent_background':mix['background_source'],
+        'logo':root/('assets/philos_club_wordmark.png' if club else 'assets/philos_haircut_logo.png')}.items()}
     visual={'width':960,'height':540,'fps':25,'zh_font_size':34,'de_font_size':24,
-        'logo_width':84,'logo_opacity':.55,'video_bitrate':850000,'aac_bitrate':128000,
+        'logo_width':144 if club else 84,'logo_opacity':.55,'video_bitrate':850000,'aac_bitrate':128000,
         'join_groups':edl['join_groups'],'pause_target_s':edl['pause_target_s']}
     result={'schema':SCHEMA,'manifest_kind':'snapshot_of_verified_delivery_not_backend_content_cache',
         'verification_record':file_record(out/'verification.json'),'root':str(root),'job':str(job),'created_at_unix':time.time(),

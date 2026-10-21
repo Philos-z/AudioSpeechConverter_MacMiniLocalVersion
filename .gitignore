@@ -35,6 +35,7 @@
 !/config/native_mlx_runtime.constraints.txt
 /assets/*
 !/assets/philos_haircut_logo.png
+!/assets/philos_club_wordmark.png
 /docs/*
 !/docs/*.md
 /release/*

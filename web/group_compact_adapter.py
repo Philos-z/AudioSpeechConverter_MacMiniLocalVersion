@@ -409,7 +409,8 @@ def verify(root,output,skip_levels=False):
     check(audio['codec_name']=='aac' and audio.get('tags',{}).get('language')=='zho' and audio['disposition']['default']==1,'Chinese default track missing')
     check(mixed['edl_sha256']==sha(output/'edit_decisions.json') and mixed['master_sha256']==sha(output/'zh_mix.wav'),'Master/EDL receipt mismatch')
     master=sf.info(output/'zh_mix.wav');check(master.samplerate==48000 and master.channels==2 and master.frames==edl['frames']*1920,'Master audio clock/frame mismatch')
-    export=read(output/'group_export.json');check(export['burned_bilingual_subtitles'] and export['logo']['width_px']==84 and export['logo']['opacity']==.55,'Subtitle/logo export settings mismatch')
+    export=read(output/'group_export.json');expected_width=144 if export['logo'].get('brand')=='Philos.club' else 84
+    check(export['burned_bilingual_subtitles'] and export['logo']['width_px']==expected_width and export['logo']['opacity']==.55,'Subtitle/logo export settings mismatch')
     levels=None
     if not skip_levels:
         measured=call([FFMPEG,'-hide_banner','-threads','2','-i',video,'-map','0:a:0','-af','loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json','-f','null','-'])
