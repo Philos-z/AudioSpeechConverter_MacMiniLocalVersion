@@ -110,9 +110,11 @@ def snapshot(root,job,output,profile_override=None):
     edl=read(out/'edit_decisions.json')
     export=read(out/'compact_export.json')
     club=export.get('logo',{}).get('brand')=='Philos.club'
+    serif=export.get('logo',{}).get('style')=='serif_box_v2'
     assets={key:file_record(path) for key,path in {'source_video':edl['source_input'],
         'independent_background':mix['background_source'],
-        'logo':root/('assets/philos_club_wordmark.png' if club else 'assets/philos_haircut_logo.png')}.items()}
+        'logo':root/('assets/philos_club_serif_wordmark.png' if serif else
+                    'assets/philos_club_wordmark.png' if club else 'assets/philos_haircut_logo.png')}.items()}
     visual={'width':960,'height':540,'fps':25,'zh_font_size':34,'de_font_size':24,
         'logo_width':144 if club else 84,'logo_opacity':.55,'video_bitrate':850000,'aac_bitrate':128000,
         'join_groups':edl['join_groups'],'pause_target_s':edl['pause_target_s']}

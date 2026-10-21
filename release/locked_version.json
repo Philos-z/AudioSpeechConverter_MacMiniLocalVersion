@@ -1,7 +1,7 @@
 {
   "schema": "source_only_locked_release_v1",
   "date": "2026-10-21",
-  "origin_deployment": "20261021_154425",
+  "origin_deployment": "20261021_163033",
   "production_profile": "hybrid-gpt-preserve-25-pad-eager",
   "cfm_steps": 25,
   "seed": 42,
@@ -35,7 +35,7 @@
     "task state/receipts/reports except model identity lock",
     "model weights/cache/virtual environments/bundled binaries"
   ],
-  "validation_scope": "62 current source tests; actual short grouped render; full 14m10.84s rebrand below50MB with unchanged AAC packets/subtitles/EDL and complete decode. No new30min source listening claim.",
+  "validation_scope": "62 current source tests; source font builder exactly reproduces PNG; actual grouped render and full14m10.84s export below50MB with unchanged AAC packets/subtitles/EDL and full decode; two independent visual sample checks.",
   "files": [
     {
       "path": ".gitattributes",
@@ -44,8 +44,8 @@
     },
     {
       "path": ".gitignore",
-      "bytes": 1062,
-      "sha256": "4371c241d355355ac5cd2d6ccb4f2fbfc59850132db322f7f3abf8974177692c"
+      "bytes": 1201,
+      "sha256": "d0efb03a5957e54460a522f4e528e7ad375ba96e31d29b90bd1b26f338c1bfb3"
     },
     {
       "path": ".gitmodules",
@@ -59,13 +59,28 @@
     },
     {
       "path": "README.md",
-      "bytes": 5625,
-      "sha256": "10f08fa55028e7d3534dc9226c1f0c9486ca7631f0c69c7496477a9821e54990"
+      "bytes": 5649,
+      "sha256": "d1835d616f99111aa1212444a26b70294394669bb51c91eccbd013095ffc5625"
     },
     {
       "path": "THIRD_PARTY_NOTICES.md",
-      "bytes": 889,
-      "sha256": "e9d503a7945575b00f13518114a1b2e35edb280b095f01843b940f2ef747bd9e"
+      "bytes": 1320,
+      "sha256": "46aa77248c6ae92930fb2a4ce4383bb3fac763b9489e857f2a066c8e5e760578"
+    },
+    {
+      "path": "assets/fonts/OFL.txt",
+      "bytes": 4449,
+      "sha256": "566be814f8e96e93dfa16101331557eb6b5467e9e03f627c0910fe93ca12300e"
+    },
+    {
+      "path": "assets/fonts/PlayfairDisplay-Variable.ttf",
+      "bytes": 300724,
+      "sha256": "c40f2293766a503bc70cce9e512ef844a4ccb7cbcde792fe2ea31d191917d8d6"
+    },
+    {
+      "path": "assets/philos_club_serif_wordmark.png",
+      "bytes": 11881,
+      "sha256": "6171ad19b9920bce4886be58f73ee3e1c6346b057bc401cf5835d3a25008d2c2"
     },
     {
       "path": "assets/philos_club_wordmark.png",
@@ -79,8 +94,8 @@
     },
     {
       "path": "config/background_bilingual.example.json",
-      "bytes": 289,
-      "sha256": "696e9df37444de6e00140485d2e5eca8f6969809ddb2e4fac57760579b0ad63c"
+      "bytes": 295,
+      "sha256": "fd304bb7668937dc907c78c497e35a406d5382f07dd8241a976abf674a4c7192"
     },
     {
       "path": "config/local.example.json",
@@ -94,8 +109,8 @@
     },
     {
       "path": "config/next_run_profile.example.json",
-      "bytes": 1388,
-      "sha256": "57ee894a3c7e753f5cb236561972f2e4edec16d3a79ebc183e8f626984999603"
+      "bytes": 1423,
+      "sha256": "f9e252c00a9655ebfcc99444cd247e83e9edc28e49a62086e6420d95a0137eb3"
     },
     {
       "path": "config/source_scopes.example.json",
@@ -164,8 +179,8 @@
     },
     {
       "path": "scripts/build_wordmark.py",
-      "bytes": 1013,
-      "sha256": "b67708807b01f373a26b1673f6996bebaa5103a2319d921deb397a67c3af8fe9"
+      "bytes": 1643,
+      "sha256": "86cbf076da185247bb63ba7ade9088d321237094a63e789fe4694d1ee63e430d"
     },
     {
       "path": "scripts/comma_chunk_tts.py",
@@ -174,8 +189,8 @@
     },
     {
       "path": "scripts/compact_edit.py",
-      "bytes": 20401,
-      "sha256": "b8b46ebab8388657f0572212c03e45b1f14223e81f430481aa4a438f6b498f1e"
+      "bytes": 20573,
+      "sha256": "2087ae1f31dcf13aabb4d2ea71186158b4d82d15a4737436f68b9892ddb80e8c"
     },
     {
       "path": "scripts/continuous_tts.py",
@@ -204,8 +219,8 @@
     },
     {
       "path": "scripts/export_bilingual.py",
-      "bytes": 4175,
-      "sha256": "0a536d3f713599c48a54277f8c56ddfdfedc9be6a74bf94e6436a22e59191674"
+      "bytes": 4358,
+      "sha256": "d36e52cf2a17ea1eaeb9e9ab865b2d559a25c2063fcbdc316d24b648ad01211e"
     },
     {
       "path": "scripts/export_size.py",
@@ -224,8 +239,8 @@
     },
     {
       "path": "scripts/incremental_media.py",
-      "bytes": 17839,
-      "sha256": "c6c24466f070f04bedd22b8ad7536c303afe3883796a37039bdb9621cdaff2d1"
+      "bytes": 17974,
+      "sha256": "03f26e97b6a9a4e717000269de7774cf69dc2d3d149fd6c3275572f2a77b4316"
     },
     {
       "path": "scripts/mix_compact.py",
@@ -289,8 +304,8 @@
     },
     {
       "path": "scripts/rebrand_export.py",
-      "bytes": 5044,
-      "sha256": "5be1684678677db2daa98e5ac006fd2521a24251e285f02578191c608c7c1bcf"
+      "bytes": 5162,
+      "sha256": "bf772c7dd8ce4b590e74782d55b0ba76bbc6da6cea69e5f7ae176be808ce521a"
     },
     {
       "path": "scripts/remix_background.py",
@@ -464,8 +479,8 @@
     },
     {
       "path": "web/pipeline.py",
-      "bytes": 90890,
-      "sha256": "26521819b36bd3c17ea36e4cf47becb956aac1e04492a77f5ad8f86928705875"
+      "bytes": 90943,
+      "sha256": "aaf8670ae280da783914360725d4044519dc0ed45c93ac088db16bc14b65dfb6"
     },
     {
       "path": "web/proxy_client.py",
@@ -533,15 +548,23 @@
       "sha256": "7d78ba82c3b72a97fd0da84a89f95981777f91d496f7226d99fc14eade7efcdd"
     }
   ],
-  "release_revision": "Philos.club watermark update",
+  "release_revision": "Restore the original serif and light-box brand style",
   "baseline_tag": "locked-2026-10-21",
-  "current_release_tag": "philos-club-2026-10-21",
+  "current_release_tag": "philos-club-serif-2026-10-21",
   "source_language_policy": "automatic_detection_and_proxy_two_pass",
   "episode_max_seconds": 1800,
   "watermark": {
-    "asset": "assets/philos_club_wordmark.png",
+    "brand": "Philos.club",
+    "style": "serif_box_v2",
+    "asset": "assets/philos_club_serif_wordmark.png",
+    "font": "Playfair Display",
+    "weight": 700,
+    "tracking_em": -0.025,
+    "foreground": "#1c2c2b",
+    "background": "#ffffff",
+    "accent": "#e5ab4f",
     "width_px": 144,
-    "height_px": 25,
+    "height_px": 26,
     "position": [
       16,
       24

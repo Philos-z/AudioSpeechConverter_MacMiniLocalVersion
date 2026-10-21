@@ -426,11 +426,12 @@ def make_receipt(root,folder,background):
     source=read(folder/'source.json');rows=read(folder/'segments.json')['segments'];shape=geometry(source['probe'])
     assets={}
     for name,path in [('source_video',Path(source['input'])),('independent_background',background),
-                      ('logo',root/'assets/philos_club_wordmark.png')]:
+                      ('logo',root/'assets/philos_club_serif_wordmark.png')]:
         assets[name]={'path':str(path.resolve()),'bytes':path.stat().st_size,'sha256':digest(path)}
     receipt={'schema':'new_web_job_asset_receipt_v1','assets':assets,
         'visual':{**shape,'join_groups':infer_groups(rows),'pause_target_s':.35,
-            'zh_font_size':34,'de_font_size':24,'logo_width':144,'logo_opacity':.55,'logo_brand':'Philos.club'},
+            'zh_font_size':34,'de_font_size':24,'logo_width':144,'logo_opacity':.55,'logo_brand':'Philos.club',
+            'logo_style':'serif_box_v2'},
         'picture_cache':{'rows':[]},'human_reviewed':False,'source_rights_verified':False}
     path=folder/'native_asset_receipt.json';save(path,receipt);return path
 
@@ -526,7 +527,7 @@ class Flow:
             raise ValueError('每集时长上限必须在1至1800秒以内')
         profile=self.options.get('experimental_profile',DEFAULT_TTS_PROFILE)
         if profile not in PROFILES:raise ValueError('不支持的25步配音配置')
-        if not (self.root/'assets/philos_club_wordmark.png').is_file():raise RuntimeError('项目logo素材缺失')
+        if not (self.root/'assets/philos_club_serif_wordmark.png').is_file():raise RuntimeError('项目logo素材缺失')
         self.folder.mkdir(parents=True,exist_ok=True)
         marker=self.folder/'web_job.json'
         identity={k:self.job.get(k) for k in ('id','input_path','source_url')}

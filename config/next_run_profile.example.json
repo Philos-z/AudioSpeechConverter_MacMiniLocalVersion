@@ -53,8 +53,9 @@
       16,
       24
     ],
-    "asset": "assets/philos_club_wordmark.png",
+    "asset": "assets/philos_club_serif_wordmark.png",
     "width_px_at_960": 144,
-    "brand": "Philos.club"
+    "brand": "Philos.club",
+    "style": "serif_box_v2"
   }
 }

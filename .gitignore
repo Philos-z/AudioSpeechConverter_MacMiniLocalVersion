@@ -36,6 +36,11 @@
 /assets/*
 !/assets/philos_haircut_logo.png
 !/assets/philos_club_wordmark.png
+!/assets/philos_club_serif_wordmark.png
+!/assets/fonts/
+/assets/fonts/*
+!/assets/fonts/PlayfairDisplay-Variable.ttf
+!/assets/fonts/OFL.txt
 /docs/*
 !/docs/*.md
 /release/*

@@ -23,9 +23,11 @@ FPS, WIDTH, HEIGHT = 25, 960, 540
 
 
 def logo_style(path):
-    current=Path(path).name=='philos_club_wordmark.png'
+    serif=Path(path).name=='philos_club_serif_wordmark.png'
+    current=serif or Path(path).name=='philos_club_wordmark.png'
     return {'width_px':144 if current else 84,'opacity':.55,'position':[16,24],
-            'brand':'Philos.club' if current else 'legacy'}
+            'brand':'Philos.club' if current else 'legacy',
+            'style':'serif_box_v2' if serif else 'transparent_sans_v1' if current else 'legacy'}
 
 
 def _json_write(path, value):
@@ -332,7 +334,7 @@ def main():
     if args.render:
         if not args.mixed_wav:p.error('--render requires --mixed-wav aligned to EDL')
         report=render(edl,args.mixed_wav,args.output or out/'landscape_compact_zh.mp4',out/'compact_bilingual.ass',
-                      args.logo or args.root/'assets/philos_club_wordmark.png',out/'render_cache')
+                      args.logo or args.root/'assets/philos_club_serif_wordmark.png',out/'render_cache')
         _json_write(out/'compact_export.json',report)
 
 

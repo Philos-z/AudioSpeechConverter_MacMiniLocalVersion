@@ -56,7 +56,8 @@ def export(picture, accepted, subtitles, logo, output, report):
         if any(sha(Path(path))!=value for path,value in sources.items()):raise ValueError('Original input changed')
         result={'schema':'clean_picture_rebrand_v1','output':str(output),'duration_s':duration,'frames':frames,
             'bytes':target.stat().st_size,'sha256':sha(target),'encoder':'libx264','burned_bilingual_subtitles':True,
-            'logo':{'brand':'Philos.club','width_px':144,'height_px':mark.height,'opacity':.55,'position':[16,24]},
+            'logo':{'brand':'Philos.club','width_px':144,'height_px':mark.height,'opacity':.55,'position':[16,24],
+                    'style':'serif_box_v2' if logo.name=='philos_club_serif_wordmark.png' else 'transparent_sans_v1'},
             'size_limit':{'max_bytes_exclusive':50_000_000,'target_bytes':48_000_000,'attempts':attempts},
             'source_files':sources,'clean_picture_frame_clock_rebuilt':True,'audio_packet_sha256':audio_identity,
             'audio_packets_identical':True,'subtitles_unchanged':True,'full_decode_passed':True,
