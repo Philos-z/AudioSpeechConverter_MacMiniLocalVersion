@@ -109,6 +109,65 @@ def suggestion_receipt(folder, job, source_sha, speakers_sha, path=None):
                                           else 'explicit external job/source SHA'}
 
 
+def recovery_file(folder, value):
+    """Require a real file reached without a symlink inside this exact job."""
+    if not isinstance(value, str) or not value or '..' in Path(value).parts:
+        raise ValueError('Invalid job-local no-join recovery evidence path')
+    path = Path(value) if Path(value).is_absolute() else folder / value
+    try:
+        relative = path.relative_to(folder)
+    except ValueError:
+        raise ValueError('No-join recovery evidence escapes the current job') from None
+    current = folder
+    for part in relative.parts:
+        current = current / part
+        if current.is_symlink():
+            raise ValueError('No-join recovery policy/evidence cannot use symlinks')
+    actual = path.resolve()
+    if not actual.is_relative_to(folder) or not actual.is_file():
+        raise ValueError('No-join recovery policy/evidence is missing or outside the current job')
+    return actual
+
+
+def no_join_recovery(folder, job, source_sha, speakers_sha, rows):
+    """Data-only, source-bound exclusions; never alter source rows or text."""
+    path = folder / 'tts/no_join_recovery.json'
+    if not path.exists() and not path.is_symlink():
+        return set(), None
+    path = recovery_file(folder, str(path))
+    document = read(path)
+    if (not isinstance(document, dict) or document.get('schema') != 'scoped_no_join_recovery_v1'
+            or document.get('job') != job or document.get('source_segments_sha256') != source_sha
+            or document.get('source_speakers_sha256') != speakers_sha):
+        raise ValueError('No-join recovery has a mismatched job/source/speaker binding')
+    groups, evidence = document.get('groups'), document.get('evidence')
+    if not isinstance(groups, list) or not groups or not isinstance(evidence, list) or not evidence:
+        raise ValueError('No-join recovery requires explicit groups and evidence')
+    for proof in evidence:
+        if (not isinstance(proof, dict) or not isinstance(proof.get('sha256'), str)
+                or not re.fullmatch(r'[a-f0-9]{64}', proof['sha256'])):
+            raise ValueError('No-join recovery evidence needs an exact SHA256')
+        actual = recovery_file(folder, proof.get('path'))
+        if sha(actual) != proof['sha256']:
+            raise ValueError('No-join recovery evidence SHA256 mismatch')
+    indices = {row['segment_id']: index for index, row in enumerate(rows)}
+    blocked = set()
+    for group in groups:
+        ids = group.get('member_ids') if isinstance(group, dict) else None
+        if (not isinstance(ids, list) or len(ids) < 2 or not all(isinstance(sid, str) for sid in ids)
+                or len(set(ids)) != len(ids) or any(sid not in indices for sid in ids)):
+            raise ValueError('No-join recovery group has unknown or duplicate member IDs')
+        positions = [indices[sid] for sid in ids]
+        if positions != list(range(positions[0], positions[0] + len(ids))):
+            raise ValueError('No-join recovery members must be source-adjacent and ordered')
+        if len({rows[index]['speaker_id'] for index in positions}) != 1:
+            raise ValueError('No-join recovery group crosses source speakers')
+        if blocked.intersection(ids):
+            raise ValueError('No-join recovery groups overlap or repeat members')
+        blocked.update(ids)
+    return blocked, {'path': str(path), 'sha256': sha(path)}
+
+
 def validate_advice(proposal, rows, indices, refs):
     """Return explicit source positions; refuse uncertain semantic boundaries."""
     if not isinstance(proposal, dict):
@@ -207,6 +266,10 @@ def build_plan(root, job, suggestions_path=None, profile=DEFAULT_PROFILE, profil
     if len(asr_ids) != len(set(asr_ids)):
         raise ValueError('Original ASR source coverage contains duplicates')
     proposals, receipt = suggestion_receipt(folder, job, source_sha, sha(speakers_path), suggestions_path)
+    blocked, recovery_receipt = no_join_recovery(folder, job, source_sha, sha(speakers_path), rows)
+    if recovery_receipt is not None:
+        receipt = {**(receipt or {'path': None, 'sha256': None, 'advice_usable': False}),
+                   'no_join_recovery': recovery_receipt}
     indices = {sid: i for i, sid in enumerate(ids)}
     candidates, rejected = {}, []
     for index, proposal in enumerate(proposals):
@@ -217,6 +280,8 @@ def build_plan(root, job, suggestions_path=None, profile=DEFAULT_PROFILE, profil
                 if proposal.get('job', job) != job or proposal.get('source_segments_sha256', source_sha) != source_sha:
                     raise ValueError('proposal_job_or_source_binding_mismatch')
             positions = validate_advice(proposal, rows, indices, refs)
+            if any(rows[position]['segment_id'] in blocked for position in positions):
+                raise ValueError('job_scoped_no_join_recovery_requires_original_sentences')
             candidates[index] = positions
         except ValueError as error:
             rejected.append({'proposal_index': index, 'reason': str(error), 'proposal': copy.deepcopy(proposal)})

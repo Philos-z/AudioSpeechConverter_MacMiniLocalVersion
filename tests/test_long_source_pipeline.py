@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).parents[1]/'web'))
@@ -12,6 +13,8 @@ import pipeline
 class ParentPipelineTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
+        disk=patch.object(pipeline.shutil,'disk_usage',return_value=SimpleNamespace(free=100*1024**3))
+        disk.start();self.addCleanup(disk.stop)
         self.root=Path(self.temp.name);self.jid='web_20261021_120000_aabbccdd'
         (self.root/'scripts').mkdir();(self.root/'scripts/asr.py').write_text('# fixture')
         self.source=self.root/'source.mp4';self.source.write_bytes(b'source')
@@ -34,7 +37,8 @@ class ParentPipelineTests(unittest.TestCase):
             return {'stdout':'{}','returncode':0}
         self.flow.command=command
         self.children=[]
-        def child(root,job,update,runner,cancelled,started,waited):
+        def child(root,job,update,runner,cancelled,started,waited,*,deadline):
+            self.assertEqual(deadline,self.flow.deadline)
             self.children.append(copy.deepcopy(job))
             self.assertEqual(job['options']['source_language'],'en')
             self.assertFalse(job['options']['split_long_source'])
@@ -64,8 +68,8 @@ class ParentPipelineTests(unittest.TestCase):
         self.assertTrue(all(a[1]<=b[1] for a,b in zip(self.updates,self.updates[1:])))
     def test_replan_uses_actual_dubbed_duration_preserves_actual_asr_counter(self):
         self.asr['segments']=[{'segment_id':str(i),'speaker_id':'S00','start_s':i+.1,'end_s':i+.7,'text_source':'Hello.','text_de':'Hello.','source_language':'en'} for i in range(6)]
-        def oversized(*args):
-            result=self.child(*args)
+        def oversized(*args,**kwargs):
+            result=self.child(*args,**kwargs)
             if len(self.children)==1:result['duration_s']=4
             return result
         result=self.run_parent(oversized)
@@ -74,8 +78,8 @@ class ParentPipelineTests(unittest.TestCase):
         self.assertTrue(all(row['duration_s']<=3 for row in result['episodes']))
         self.assertTrue((self.flow.folder/'episode_replan_1.json').is_file())
     def test_cancellation_between_children_stops_remaining_work(self):
-        def cancel_after_first(*args):
-            result=self.child(*args);self.flow.cancelled=lambda:True;return result
+        def cancel_after_first(*args,**kwargs):
+            result=self.child(*args,**kwargs);self.flow.cancelled=lambda:True;return result
         with self.assertRaisesRegex(RuntimeError,'取消'):self.run_parent(cancel_after_first)
         self.assertEqual(len(self.children),1)
     def test_source_alias_and_language_drift_are_rejected_before_grouping(self):

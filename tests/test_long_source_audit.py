@@ -8,6 +8,7 @@ import sys
 import tempfile
 import threading
 import time
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -21,6 +22,10 @@ spec.loader.exec_module(pipeline)
 
 class LongSourceAuditTests(unittest.TestCase):
     def fixture(self, root, *, cancel=None):
+        disk = mock.patch.object(pipeline.shutil, 'disk_usage',
+                                 return_value=SimpleNamespace(free=100 * 1024**3))
+        disk.start()
+        self.addCleanup(disk.stop)
         source = root / "source.mp4"
         source.write_bytes(b"source fixture; never decoded")
         (root / "scripts").mkdir()
@@ -77,8 +82,9 @@ class LongSourceAuditTests(unittest.TestCase):
             flow, source, calls, asr, events = self.fixture(root)
             first = True
 
-            def child(*args):
+            def child(*args, deadline):
                 nonlocal first
+                self.assertEqual(deadline, flow.deadline)
                 child_job = args[1]
                 calls["children"].append(copy.deepcopy(child_job))
                 result = self.child_result(root, child_job, duration=3 if first else None)
@@ -105,7 +111,8 @@ class LongSourceAuditTests(unittest.TestCase):
             lockfile = root / "cache/.web_pipeline.lock"
             lockfile.parent.mkdir()
 
-            def child(*args):
+            def child(*args, deadline):
+                self.assertEqual(deadline, flow.deadline)
                 with lockfile.open("a+") as contender:
                     with self.assertRaises(BlockingIOError):
                         fcntl.flock(contender.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -123,8 +130,11 @@ class LongSourceAuditTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             flow, source, calls, asr, events = self.fixture(root)
+            def oversized_child(*args, deadline):
+                self.assertEqual(deadline, flow.deadline)
+                return self.child_result(root, args[1], size=50_000_000)
             with mock.patch.object(pipeline, "_run_with_recovery",
-                    side_effect=lambda *args: self.child_result(root, args[1], size=50_000_000)):
+                    side_effect=oversized_child):
                 with self.assertRaisesRegex(RuntimeError, "50MB"):
                     flow.process_episodes({"asr_model": "cached", "minimum_free_gib": 0}, source,
                         pipeline.digest(source), {}, 6, 0, "auto", 2)
@@ -136,7 +146,8 @@ class LongSourceAuditTests(unittest.TestCase):
             cancellation = threading.Event()
             flow, source, calls, asr, events = self.fixture(root, cancel=cancellation)
 
-            def child(*args):
+            def child(*args, deadline):
+                self.assertEqual(deadline, flow.deadline)
                 result = self.child_result(root, args[1])
                 cancellation.set()
                 return result

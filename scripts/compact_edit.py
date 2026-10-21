@@ -291,11 +291,13 @@ def _render_locked(edl, mixed_wav, output_path, ass_path, logo_path, work_dir):
         _json_write(progress_path,progress)
         _call([FFMPEG,'-hide_banner','-loglevel','error','-y','-f','concat','-safe','0','-i',concat,'-an','-c:v','copy',picture],log)
         output=Path(output_path);output.parent.mkdir(parents=True,exist_ok=True)
-        filters=f'[0:v:0]ass=filename={_filter_path(ass_path)}[s];[s][2:v:0]overlay=16:24:shortest=1[v]'
+        # Concat container tails can add gaps; restore the EDL clock by frame index before subtitles.
+        filters=f'[0:v:0]settb=1/25,setpts=N,ass=filename={_filter_path(ass_path)}[s];[s][2:v:0]overlay=16:24:shortest=1[v]'
         progress.update({'phase':'burning_subtitles_and_muxing_audio','updated_at_unix':time.time()})
         _json_write(progress_path,progress)
         _call([FFMPEG,'-hide_banner','-loglevel','error','-y','-i',picture,'-i',mixed_wav,'-loop','1','-i',logo_out,
                '-filter_complex',filters,'-map','[v]','-map','1:a:0','-c:v','h264_videotoolbox','-b:v','850k',
+               '-r',FPS,'-fps_mode','cfr','-frames:v',edl['frames'],
                '-pix_fmt','yuv420p','-c:a','aac','-b:a','128k','-metadata:s:a:0','language=zho',
                '-disposition:a:0','default','-t',edl['duration_s'],'-movflags','+faststart',output],
               log,progress_path,progress,edl['duration_s'])

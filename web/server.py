@@ -27,17 +27,35 @@ import urllib.request
 
 from pipeline import DEFAULT_TTS_PROFILE, DEFAULT_TTS_GROUPING, DEFAULT_MASTERING_POLICY
 from source_language import normalize_language, source_language_metadata
+from failure_triage import (SOURCE_GATE, TRANSLATION_STAGE, checkpoint_marker,
+    make_failure_record, persist_failure, public_failure, retry_message)
+from website_recovery import DEFAULT_POLICY, normalize_policy, public_recovery
 
 ID = re.compile(r'^web_\d{8}_\d{6}_[a-f0-9]{8}$')
 VIDEO_EXT = {'.mp4', '.mov', '.m4v', '.mkv', '.webm', '.avi', '.ts', '.mpeg', '.mpg', '.flv', '.wmv'}
 ACTIVE = {'queued', 'running'}
 MAX_UPLOAD = 1024 ** 3
 RESERVE = 8 * 1024 ** 3
+UPLOAD_MARGIN = 32 * 1024 ** 2  # Streaming receive writes one file; model peak is checked later.
 VERSION = 'philos_lan_web_v1'
 
 
 def now():
     return datetime.now(timezone.utc).isoformat()
+
+
+def public_metrics(value):
+    # Keep private receipt locations in local engineering records, including
+    # nested episode metrics. Never mutate the persisted task while presenting it.
+    if isinstance(value, list):
+        return [public_metrics(item) for item in value]
+    if isinstance(value, dict):
+        result = {key: public_metrics(item) for key, item in value.items()}
+        revision = result.get('source_plan_revision')
+        if isinstance(revision, dict):
+            revision.pop('receipt', None)
+        return result
+    return value
 
 
 def atomic_json(path, value):
@@ -52,7 +70,7 @@ def atomic_json(path, value):
 def safe_message(error):
     message = str(error).splitlines()[0][:250]
     if re.search(r'(?i)bearer|api.?key|secret|token|password|authorization|sk-[a-z0-9]|/Users/|/home/|traceback', message):
-        return '处理未完成，详细记录已保存在本机。可以重新提交素材。'
+        return '处理未完成，详细记录已保存在本机。可从断点继续。'
     return message if re.search('[\u3400-\u9fff]', message) else '处理未完成，详细记录已保存在本机。'
 
 
@@ -101,10 +119,15 @@ class JobManager:
                 if not ID.fullmatch(job['id']):
                     continue
                 if job['status'] == 'running':
-                    job.update(status='failed', stage='failed', error='上次服务已中断，请重新提交素材。', updated_at=now())
+                    job.pop('failure_record',None)
+                    job.update(status='failed', stage='failed', error='上次服务已中断，已有成果已保留，可从断点继续。', updated_at=now())
                     atomic_json(path, job)
                 if job['status'] == 'queued':
                     self.pending.append(job['id'])
+                if (job['status']=='failed' and not job.get('failure_record')
+                        and str(job.get('error','')).startswith(SOURCE_GATE)):
+                    self.attach_failure(job,RuntimeError(job['error']),TRANSLATION_STAGE,None)
+                    atomic_json(path,job)
                 self.jobs[job['id']] = job
                 self.cancel_events[job['id']] = threading.Event()
             except (ValueError, KeyError, OSError):
@@ -116,6 +139,13 @@ class JobManager:
     def public(self, job):
         keys = ('id', 'title', 'status', 'stage', 'progress', 'created_at', 'updated_at', 'error', 'warnings', 'metrics', 'duration_s', 'review_status', 'source_language', 'source_language_label', 'episode_count', 'episodes')
         result = {k: job[k] for k in keys if k in job}
+        if 'metrics' in result:
+            result['metrics'] = public_metrics(result['metrics'])
+        if job.get('status') in {'failed','canceled'}:
+            failure=public_failure(self.root,job)
+            if failure:result['failure']=failure
+        result['recovery'] = public_recovery(self.root, job['id'])
+        result['recovery']['policy_configured'] = 'website_recovery' in job.get('options', {})
         result['artifacts'] = [
             {'label': item['label'], 'kind': item.get('kind', 'file'),
              'url': '/api/jobs/' + job['id'] + '/artifacts/' + str(i) + '?v=' + hashlib.sha256(
@@ -125,14 +155,31 @@ class JobManager:
         ]
         return result
 
+    def attach_failure(self,job,error,stage,checkpoint_before):
+        # Evidence collection is local and advisory; it cannot execute a retry
+        # or replace the original failure if a diagnostic file is unavailable.
+        try:
+            record=make_failure_record(self.root,job,error,stage=stage,checkpoint_before=checkpoint_before)
+            persist_failure(self.root,job['id'],record)
+            job['failure_record']=record
+            if record.get('progress_floor') is not None:
+                job['progress']=max(float(job.get('progress',0)),record['progress_floor'])
+                job['stage_details']={'completed':record.get('completed'),'total':record.get('total'),
+                    'human_reviewed':False,'source_review_pending':True}
+        except (OSError,ValueError,TypeError,KeyError):
+            pass
+
     def save(self, job):
         atomic_json(self.state / (job['id'] + '.json'), job)
 
     def new_id(self):
         return datetime.now().strftime('web_%Y%m%d_%H%M%S_') + uuid.uuid4().hex[:8]
 
-    def add(self, *, input_path=None, source_url=None, title='', source_sha256=None, job_id=None, source_language='auto'):
+    def add(self, *, input_path=None, source_url=None, title='', source_sha256=None, job_id=None, source_language='auto', website_recovery=None):
         source_language = normalize_language(source_language)
+        policy = normalize_policy(DEFAULT_POLICY if website_recovery is None else website_recovery)
+        if policy['reserve_gib'] != 8:
+            raise ValueError('新任务保留8GiB空间；空间不足的失败任务可单独选择2GiB恢复。')
         with self.condition:
             if sum(x['status'] in ACTIVE for x in self.jobs.values()) >= 3:
                 raise ValueError('当前有3个任务在等待或处理中，请稍后提交。')
@@ -149,7 +196,8 @@ class JobManager:
                                'voice_pilot_groups': 2,
                                'source_language': source_language, 'target_language': 'zh',
                                'episode_max_seconds': 1800, 'split_long_source': True,
-                               'subtitles': 'zh_above_source', 'human_reviewed': False},
+                               'subtitles': 'zh_above_source', 'human_reviewed': False,
+                               'website_recovery': policy},
                    **source_language_metadata(source_language),
                    'review_status': '机器审稿预览，仍需核对专名与听感'}
             if input_path:
@@ -301,18 +349,166 @@ class JobManager:
                 raise KeyError(job_id)
             if job['status'] not in {'failed', 'canceled'}:
                 raise ValueError('当前任务无需重试，请等待处理结束。')
-            if sum(x['status'] in ACTIVE for x in self.jobs.values()) >= 3:
-                raise ValueError('当前任务较多，请稍后继续。')
-            if job.get('input_path') and not Path(job['input_path']).is_file():
-                raise ValueError('原视频已不在本机，请重新上传。')
-            job.setdefault('attempts', []).append({'ended_at': job.get('updated_at'),
-                                                  'status': job['status'], 'error': job.get('error')})
-            job.update(status='queued', stage='queued', progress=0, error=None, updated_at=now())
-            self.cancel_events[job_id] = threading.Event()
-            self.save(job)
-            self.pending.append(job_id)
-            self.condition.notify()
-            return self.public(job)
+            self._resume_manual_review(job)
+            blocked=retry_message(self.root,job)
+            if blocked:raise ValueError(blocked)
+            return self._queue_retry(job)
+
+    def _resume_manual_review(self, job):
+        # Finish a validated, interrupted save before inspecting fingerprints or
+        # queuing work. A job with no manual transaction needs no source files.
+        import website_review
+        website_review.resume_pending(self.root, job['id'])
+
+    def _retry_inputs(self, job):
+        if sum(x['status'] in ACTIVE for x in self.jobs.values()) >= 3:
+            raise ValueError('当前任务较多，请稍后继续。')
+        if job.get('input_path') and not Path(job['input_path']).is_file():
+            raise ValueError('原视频已不在本机，请重新上传。')
+
+    def _queue_retry(self, job):
+        self._retry_inputs(job)
+        job_id = job['id']
+        job.setdefault('attempts', []).append({'ended_at': job.get('updated_at'),
+                                              'status': job['status'], 'error': job.get('error')})
+        job.update(status='queued', stage='queued', progress=0, error=None, updated_at=now())
+        job.pop('failure_record',None)
+        job.pop('stage_details',None)
+        self.cancel_events[job_id] = threading.Event()
+        self.save(job)
+        # A queued cancellation may still have its old deque entry. Reuse must
+        # leave exactly one pending entry, even before the worker discards it.
+        self.pending = deque(item for item in self.pending if item != job_id)
+        self.pending.append(job_id)
+        self.condition.notify()
+        return self.public(job)
+
+    def recover(self, job_id, value):
+        policy = normalize_policy(value)
+        with self.condition:
+            job = self.jobs.get(job_id)
+            if job is None:
+                raise KeyError(job_id)
+            previous_request = job.get('website_recovery_request', {})
+            # A repeated HTTP request never queues a second copy of the task.
+            if job['status'] in ACTIVE and previous_request.get('policy') == policy:
+                return self.public(job)
+            if job['status'] not in {'failed', 'canceled'}:
+                raise ValueError('只有未完成或已取消的任务可以恢复。')
+            self._resume_manual_review(job)
+            recovery = public_recovery(self.root, job_id)
+            budget = recovery.get('budget', {})
+            budget_valid = (isinstance(budget, dict) and all(type(budget.get(k)) is int
+                for k in ('used', 'max', 'remaining')) and budget['max'] == 6
+                and 0 <= budget['used'] <= budget['max']
+                and budget['remaining'] == budget['max'] - budget['used']
+                and type(budget.get('exhausted')) is bool
+                and budget['exhausted'] == (budget['remaining'] == 0))
+            if recovery.get('available') is False or not budget_valid:
+                raise ValueError('恢复预算记录暂不可用，已有成果保留，未启动新的恢复。')
+            if budget['exhausted']:
+                raise ValueError('本任务的自动恢复预算已用完，已有成果已保留。')
+            options = job.get('options', {})
+            old_policy = normalize_policy(options.get('website_recovery', DEFAULT_POLICY))
+            changed = 'website_recovery' not in options or old_policy != policy
+            failure = public_failure(self.root, job) or {}
+            category = failure.get('category')
+            if policy['reserve_gib'] == 2 and old_policy['reserve_gib'] != 2 and category != 'storage':
+                raise ValueError('仅空间不足的失败任务可以选择2GiB恢复余量。')
+            blocked = retry_message(self.root, job)
+            # Policy is itself part of the old failure fingerprint. Check the
+            # protection BEFORE changing it so numeric/content failures cannot
+            # be unlocked just by toggling unrelated settings.
+            source_policy_changed = ('website_recovery' not in options or
+                old_policy['enabled'] != policy['enabled'] or old_policy['source_mode'] != policy['source_mode'])
+            can_change_source = (category == 'source_review' and policy['enabled']
+                                 and policy['source_mode'] == 'contextual' and source_policy_changed)
+            known_media = category in {'tts', 'audio', 'alignment', 'timing', 'picture'}
+            if blocked and not (changed and (can_change_source or known_media)):
+                raise ValueError(blocked)
+            token_data = {'category': category, 'stage': job.get('failure_record', {}).get('stage'),
+                          'source': job.get('source_sha256'), 'checkpoint': checkpoint_marker(self.root, job_id),
+                          'ids': failure.get('segment_ids', [])}
+            token = hashlib.sha256(json.dumps(token_data, sort_keys=True).encode()).hexdigest()
+            overrides = list(job.get('website_recovery_policy_overrides', []))
+            if blocked and token in overrides:
+                raise ValueError('同一内容已按恢复选项尝试过，请先核对新的诊断或修订。')
+            self._retry_inputs(job)
+            job.setdefault('options', {})['website_recovery'] = policy
+            if blocked:
+                overrides.append(token)
+                job['website_recovery_policy_overrides'] = overrides[-64:]
+            job['website_recovery_request'] = {'policy': policy, 'at': now()}
+            return self._queue_retry(job)
+
+    def _review_job(self, job_id):
+        job = self.jobs.get(job_id)
+        if job is None:
+            raise KeyError(job_id)
+        if job['status'] not in {'failed', 'canceled'}:
+            raise ValueError('请等待任务停止后，再核对或保存原句。')
+        return job
+
+    def review_rows(self, job_id):
+        with self.condition:
+            self._review_job(job_id)
+            import website_review
+            rows = website_review.review_rows(self.root, job_id)
+            if not isinstance(rows, list) or len(rows) > 8:
+                raise ValueError('原句核对记录无效。')
+            result = []
+            for row in rows:
+                if (not isinstance(row, dict) or not re.fullmatch(r'line\d{4,}', str(row.get('id', '')))
+                        or not all(type(row.get(k)) in (int, float) and math.isfinite(row[k])
+                                   for k in ('start_s', 'end_s'))
+                        or not 0 <= row['start_s'] <= row['end_s'] <= 172800
+                        or not all(isinstance(row.get(k), str) and len(row[k]) <= 8000
+                                   for k in ('text_source', 'text_zh'))):
+                    raise ValueError('原句核对记录无效。')
+                result.append({k: row[k] for k in ('id', 'start_s', 'end_s', 'text_source', 'text_zh')})
+                result[-1]['uncertain'] = row.get('uncertain') is True
+            return result
+
+    def review_audio(self, job_id, segment_id):
+        with self.condition:
+            self._review_job(job_id)
+            if not re.fullmatch(r'line\d{4,}', segment_id):
+                raise ValueError('原句位置无效。')
+            import website_review
+            path = Path(website_review.audio_preview(self.root, job_id, segment_id))
+            folder = self.root / 'jobs' / job_id
+            actual = path.resolve(strict=True)
+            if (not path.is_absolute() or not actual.is_relative_to(folder) or not actual.is_file()
+                    or actual.suffix != '.mp3' or not 1 <= actual.stat().st_size <= 32 * 1024**2):
+                raise ValueError('原声片段位置无效。')
+            current = path
+            while current != self.root and current != current.parent:
+                if current.is_symlink():
+                    raise ValueError('原声片段不能通过符号链接读取。')
+                current = current.parent
+            return actual
+
+    def save_review(self, job_id, corrections):
+        # The same condition guards queueing/worker selection. A job cannot
+        # begin while a versioned human correction is being saved.
+        with self.condition:
+            self._review_job(job_id)
+            if not isinstance(corrections, list) or not 1 <= len(corrections) <= 8:
+                raise ValueError('每次请保存1至8句更正。')
+            ids = set()
+            for item in corrections:
+                if (not isinstance(item, dict) or set(item) - {'id', 'source_text', 'preferred_translation'}
+                        or not re.fullmatch(r'line\d{4,}', str(item.get('id', '')))
+                        or item['id'] in ids or len(item) < 2
+                        or not all(isinstance(value, str) and 0 < len(value.strip()) <= 4000
+                                   for key, value in item.items() if key != 'id')):
+                    raise ValueError('原句更正格式无效。')
+                ids.add(item['id'])
+            import website_review
+            result = website_review.save_corrections(self.root, job_id, corrections)
+            if not isinstance(result, dict) or result.get('saved') is not True:
+                raise ValueError('更正尚未保存，原有成果保留。')
+            return {'saved': True, 'rows': len(corrections), 'requires_proxy_review': True}
 
     def command(self, job_id, argv, cwd=None, env=None, on_line=None, timeout=None, should_abort=None):
         if self.cancel_events[job_id].is_set():
@@ -419,6 +615,7 @@ class JobManager:
                     continue
                 job.update(status='running', stage='准备素材', updated_at=now())
                 self.save(job)
+            checkpoint_before=checkpoint_marker(self.root,job_id)
             try:
                 from pipeline import run_job
                 result = run_job(self.root, dict(job),
@@ -440,6 +637,7 @@ class JobManager:
                 with self.lock:
                     if self.cancel_events[job_id].is_set():
                         raise Cancelled('任务已取消')
+                    job.pop('failure_record',None)
                     job.update(status='completed', stage='completed', progress=100,
                                artifacts=artifacts, updated_at=now(),
                                metrics=result.get('metrics', {}), duration_s=result.get('duration_s'),
@@ -450,13 +648,18 @@ class JobManager:
             except Exception as error:
                 with self.lock:
                     canceled = isinstance(error, Cancelled) or self.cancel_events[job_id].is_set()
+                    failed_stage=job.get('stage','unknown')
+                    self.attach_failure(job,error,failed_stage,checkpoint_before)
                     job.update(status='canceled' if canceled else 'failed',
                                stage='canceled' if canceled else 'failed',
                                error='任务已取消' if canceled else safe_message(error), updated_at=now())
                     self.save(job)
                 report = self.root / 'reports/web_app/jobs' / (job_id + '.error.json')
                 # Keep diagnostic paths only in the local, private report, never the API.
-                atomic_json(report, {'at': now(), 'type': type(error).__name__, 'message': safe_message(error)})
+                diagnosis=job.get('failure_record',{})
+                atomic_json(report, {'at': now(), 'type': type(error).__name__, 'message': safe_message(error),
+                    'category':diagnosis.get('category','unknown'),'stage':failed_stage,
+                    'segment_ids':diagnosis.get('segment_ids',[]),'retry_policy':diagnosis.get('retry_policy','allowed')})
 
     def health(self):
         required = ['envs/asr/bin/python', 'vendor/mlx-indextts2-inference/.venv/bin/python',
@@ -621,6 +824,18 @@ class Handler(BaseHTTPRequestHandler):
                 jobs = sorted(self.manager.jobs.values(), key=lambda x: x['created_at'], reverse=True)
                 snapshot = {'jobs': [self.manager.public(x) for x in jobs[:100]]}
             return self.json_response(200, snapshot)
+        review = re.fullmatch(r'/api/jobs/([^/]+)/(review|review-audio/(line\d{4,}))', path)
+        if review and ID.fullmatch(review[1]):
+            try:
+                if review[3]:
+                    return self.serve_file(self.manager.review_audio(review[1], review[3]))
+                return self.json_response(200, {'rows': self.manager.review_rows(review[1])})
+            except KeyError:
+                return self.json_response(404, {'detail': '找不到这个任务。'})
+            except (ValueError, OSError) as error:
+                return self.json_response(400, {'detail': safe_message(error)})
+            except RuntimeError as error:
+                return self.json_response(409, {'detail': safe_message(error)})
         match = re.fullmatch(r'/api/jobs/([^/]+)(?:/artifacts/(\d+))?', path)
         if match and ID.fullmatch(match[1]):
             with self.manager.lock:
@@ -670,19 +885,41 @@ class Handler(BaseHTTPRequestHandler):
                 if shutil.disk_usage(self.manager.root).free < RESERVE + 512 * 1024 ** 2:
                     return self.json_response(507, {'detail': '空间不足，已保留8GB供系统运行。'})
                 result = self.manager.add(source_url=source_url, title=body.get('title', ''),
-                                          source_language=body.get('source_language', 'auto'))
+                                          source_language=body.get('source_language', 'auto'),
+                                          website_recovery=body.get('website_recovery'))
                 return self.json_response(201, result)
             except (ValueError, AttributeError, TypeError) as error:
                 return self.json_response(400, {'detail': safe_message(error)})
-        match = re.fullmatch(r'/api/jobs/([^/]+)/(cancel|retry)', url.path)
+        match = re.fullmatch(r'/api/jobs/([^/]+)/(cancel|retry|recover|review)', url.path)
         if match and ID.fullmatch(match[1]):
             try:
-                operation = self.manager.cancel if match[2] == 'cancel' else self.manager.retry
-                result = operation(match[1])
+                if match[2] == 'review':
+                    length = int(self.headers.get('Content-Length', '0'))
+                    if not 1 <= length <= 65536:
+                        raise ValueError('原句更正内容过长或格式无效。')
+                    body = json.loads(self.rfile.read(length))
+                    if not isinstance(body, dict) or set(body) != {'corrections'}:
+                        raise ValueError('原句更正格式无效。')
+                    result = self.manager.save_review(match[1], body['corrections'])
+                elif match[2] == 'recover':
+                    length = int(self.headers.get('Content-Length', '0'))
+                    if not 1 <= length <= 4096:
+                        raise ValueError('恢复选项格式无效。')
+                    body = json.loads(self.rfile.read(length))
+                    if not isinstance(body, dict) or set(body) != {'policy'}:
+                        raise ValueError('恢复选项格式无效。')
+                    result = self.manager.recover(match[1], body['policy'])
+                else:
+                    operation = self.manager.cancel if match[2] == 'cancel' else self.manager.retry
+                    result = operation(match[1])
                 return self.json_response(200, result, close=True)
             except KeyError:
                 return self.json_response(404, {'detail': '找不到这个任务。'}, close=True)
-            except ValueError as error:
+            except (ValueError, TypeError) as error:
+                return self.json_response(400, {'detail': safe_message(error)}, close=True)
+            except RuntimeError as error:
+                return self.json_response(409, {'detail': safe_message(error)}, close=True)
+            except OSError as error:
                 return self.json_response(400, {'detail': safe_message(error)}, close=True)
         return self.json_response(404, {'detail': '找不到这个操作。'}, close=True)
 
@@ -698,12 +935,18 @@ class Handler(BaseHTTPRequestHandler):
         part = target = folder = None
         registered = False
         try:
-            if shutil.disk_usage(self.manager.root).free < RESERVE + size + 512 * 1024 ** 2:
+            if shutil.disk_usage(self.manager.root).free < RESERVE + size + UPLOAD_MARGIN:
                 return self.json_response(507, {'detail': '空间不足以接收这个视频，已保留8GB供系统运行。'}, close=True)
             with self.manager.lock:
                 if sum(x['status'] in ACTIVE for x in self.manager.jobs.values()) >= 3:
                     return self.json_response(429, {'detail': '当前任务较多，请稍后提交。'}, close=True)
             source_language = normalize_language(query.get('source_language', ['auto'])[0])
+            supplied_policy = query.get('website_recovery', [])
+            if len(supplied_policy) > 1 or (supplied_policy and len(supplied_policy[0]) > 1024):
+                raise ValueError('恢复选项格式无效。')
+            policy = normalize_policy(json.loads(supplied_policy[0]) if supplied_policy else DEFAULT_POLICY)
+            if policy['reserve_gib'] != 8:
+                raise ValueError('新任务保留8GiB空间；空间不足后可单独选择2GiB恢复。')
             name = Path(str(query.get('name', ['video.mp4'])[0]).replace('\\', '/')).name
             extension = Path(name).suffix.lower()
             if extension not in VIDEO_EXT:
@@ -724,7 +967,7 @@ class Handler(BaseHTTPRequestHandler):
                     sha.update(chunk); output.write(chunk); remaining -= len(chunk)
             part.replace(target)
             result = self.manager.add(input_path=target, source_sha256=sha.hexdigest(), title=Path(name).stem, job_id=job_id,
-                                      source_language=source_language)
+                                      source_language=source_language, website_recovery=policy)
             registered = True
             return self.json_response(201, result)
         except (OSError, ValueError) as error:
@@ -750,8 +993,14 @@ def main():
     p.add_argument('--root', type=Path, required=True)
     p.add_argument('--host', default='0.0.0.0')
     p.add_argument('--port', type=int, default=8766)
-    p.add_argument('--lan-host', default=os.environ.get('PHILOS_LAN_HOST', 'localhost'))
+    p.add_argument('--lan-host', default=os.environ.get('PHILOS_LAN_HOST'))
     a = p.parse_args()
+    if not a.lan_host:
+        try:
+            settings=json.loads((a.root/'config/local.json').read_text())
+            configured=settings.get('web_lan_host','')
+            a.lan_host=configured if isinstance(configured,str) and configured.strip() else 'localhost'
+        except (OSError,ValueError,TypeError):a.lan_host='localhost'
     os.umask(0o077)
     server = make_server(a.root, a.host, a.port, lan_host=a.lan_host)
     def stop(signum, frame):

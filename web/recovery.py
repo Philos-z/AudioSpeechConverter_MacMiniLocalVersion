@@ -31,6 +31,7 @@ _STAGES = {
     'translation': 'translation', 'proxy_translation': 'translation',
     '机器翻译与第二遍审校': 'translation', 'translation_review': 'translation',
     'audit': 'translation', 'prepare': 'prepare', '读取视频信息': 'prepare',
+    'Proxy处理局部译稿并独立复核': 'translation',
     '下载视频到本机': 'acquire', 'acquire': 'acquire', 'asr': 'asr',
     '识别德语台词': 'asr', 'separation': 'separation', '分离人声与场景背景': 'separation',
     'tts': 'tts', '生成中文配音草稿': 'tts', 'alignment': 'alignment',

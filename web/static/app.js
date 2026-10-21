@@ -5,7 +5,9 @@
   const state = {
     mode: "upload", file: null, busy: false, jobs: [], selectedId: null,
     selectedJob: null, sources: new Map(), listPending: false, detailPending: false, detailRevision: 0,
-    healthPending: false, cancelPending: false, previewKey: "", toastTimer: null,
+    healthPending: false, cancelPending: false, recoverPending: false, previewKey: "", toastTimer: null,
+    recoveryDraftId: null, recoveryPolicyKey: "", recoveryDirty: false,
+    reviewJobId: null, reviewRows: [], reviewLoaded: false, reviewLoading: false, reviewSaving: false,
   };
   const statusNames = {
     queued: "等待处理", running: "处理中", completed: "已生成预览",
@@ -152,16 +154,17 @@
     $("start-button").disabled = value;
     $("start-button").classList.toggle("busy", value);
     $("start-button").querySelector(".button-label").textContent = label || (value ? "正在提交" : "开始译配");
-    for (const id of ["video-file", "source-url", "source-language", "job-title", "upload-tab", "url-tab", "remove-file"]) $(id).disabled = value;
+    for (const id of ["video-file", "source-url", "source-language", "job-title", "upload-tab", "url-tab", "remove-file", "new-recovery-enabled", "new-recovery-source", "new-recovery-holds"]) $(id).disabled = value;
     $("dropzone").setAttribute("aria-disabled", String(value));
     $("submission-progress").hidden = !value;
     if (!value) $("upload-percent").textContent = "";
   }
 
-  function upload(file, sourceLanguage) {
+  function upload(file, sourceLanguage, recoveryPolicy) {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
-      xhr.open("POST", "/api/jobs/upload?name=" + encodeURIComponent(file.name) + "&source_language=" + encodeURIComponent(sourceLanguage));
+      xhr.open("POST", "/api/jobs/upload?name=" + encodeURIComponent(file.name) + "&source_language=" + encodeURIComponent(sourceLanguage)
+        + "&website_recovery=" + encodeURIComponent(JSON.stringify(recoveryPolicy)));
       xhr.setRequestHeader("Content-Type", "application/octet-stream");
       xhr.timeout = 30 * 60 * 1000;
       xhr.upload.onprogress = (event) => {
@@ -197,9 +200,11 @@
     $("submission-text").textContent = source.kind === "upload" ? "正在上传视频" : "正在提交视频链接";
     busy(true, source.kind === "upload" ? "正在上传" : "正在提交");
     try {
-      const response = source.kind === "upload" ? await upload(source.file, source.sourceLanguage || "auto") : await request("/api/jobs", {
+      const recoveryPolicy = { enabled: $("new-recovery-enabled").checked,
+        source_mode: $("new-recovery-source").value, picture_holds: $("new-recovery-holds").checked, reserve_gib: 8 };
+      const response = source.kind === "upload" ? await upload(source.file, source.sourceLanguage || "auto", recoveryPolicy) : await request("/api/jobs", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ source_url: source.url, title: source.title || "", source_language: source.sourceLanguage || "auto" }),
+        body: JSON.stringify({ source_url: source.url, title: source.title || "", source_language: source.sourceLanguage || "auto", website_recovery: recoveryPolicy }),
       });
       const job = parsedJob(response);
       const id = job?.id || response?.job_id;
@@ -227,6 +232,7 @@
 
   function stageLabel(job) {
     if (job.status === "completed") return "审稿预览已生成";
+    if (job.status === "failed" && job.failure?.title) return displayError(job.failure.title, "等待检查");
     if (job.status === "canceled" || job.status === "cancelled") return "任务已取消";
     const text = typeof job.stage === "string" ? job.stage.trim() : "";
     if (stageNames[text.toLowerCase()]) return stageNames[text.toLowerCase()];
@@ -246,8 +252,9 @@
     return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(date);
   }
 
-  function pill(status) {
-    const node = create("span", "status-pill", statusNames[status] || "状态待确认");
+  function pill(status, failure = null) {
+    const text = status === "failed" && failure?.title ? displayError(failure.title, "等待检查") : statusNames[status] || "状态待确认";
+    const node = create("span", "status-pill", text);
     node.dataset.status = status || "unknown";
     return node;
   }
@@ -279,7 +286,7 @@
       meta.append(create("span", "job-stage", stageLabel(job) + (job.status === "running" && p !== null ? " · " + p + "%" : "")));
       copy.append(meta);
       const right = create("span", "job-right");
-      right.append(pill(job.status), create("span", "job-chevron", "›"));
+      right.append(pill(job.status, job.failure), create("span", "job-chevron", "›"));
       button.append(icon, copy, right);
       button.addEventListener("click", () => selectJob(id, original));
       item.append(button);
@@ -356,11 +363,169 @@
     }
   }
 
+  function recoveryPolicy(value) {
+    return { enabled: value?.enabled !== false, source_mode: value?.source_mode === "strict" ? "strict" : "contextual",
+      picture_holds: value?.picture_holds !== false, reserve_gib: value?.reserve_gib === 2 ? 2 : 8 };
+  }
+
+  function recoveryDraft() {
+    return { enabled: $("recovery-enabled").checked, source_mode: $("recovery-source").value,
+      picture_holds: $("recovery-holds").checked, reserve_gib: Number($("recovery-reserve").value) };
+  }
+
+  function updateRecoveryAction() {
+    const job = state.selectedJob;
+    if (!job) return;
+    const info = job.recovery || {}, policy = recoveryPolicy(info.policy), draft = recoveryDraft();
+    const budget = info.budget;
+    const budgetKnown = info.available !== false && budget && [budget.used, budget.max, budget.remaining].every(Number.isInteger)
+      && budget.max === 6 && budget.used >= 0 && budget.used <= budget.max
+      && budget.remaining === budget.max - budget.used && typeof budget.exhausted === "boolean"
+      && budget.exhausted === (budget.remaining === 0);
+    const exhausted = budgetKnown && budget.exhausted;
+    const blocked = job.failure?.can_retry === false;
+    const changed = info.policy_configured === false || JSON.stringify(policy) !== JSON.stringify(draft);
+    const category = job.failure?.category;
+    const sourceChanged = info.policy_configured === false || policy.enabled !== draft.enabled || policy.source_mode !== draft.source_mode;
+    const permittedChange = changed && ((category === "source_review" && draft.enabled && draft.source_mode === "contextual" && sourceChanged)
+      || ["tts", "audio", "alignment", "timing", "picture"].includes(category));
+    $("recover-button").disabled = state.recoverPending || state.reviewSaving || !budgetKnown || exhausted || (blocked && !permittedChange);
+    $("retry-button").disabled = state.recoverPending || state.reviewSaving || blocked;
+    $("recovery-action-note").textContent = !budgetKnown ? "恢复记录暂不可用，已有成果保留。请刷新后再继续。"
+      : exhausted ? "本任务的文字恢复预算已用完，已有成果已保留。"
+      : blocked && !permittedChange ? "此问题仍需有效修订；重复点击或更改无关选项不会跳过内容检查。"
+      : "按当前选项从断点继续，只重做必要步骤。文字服务仅提供受限文字建议。";
+    for (const id of ["recovery-enabled", "recovery-source", "recovery-holds", "recovery-reserve"]) $(id).disabled = state.recoverPending || state.reviewSaving;
+  }
+
+  function renderRecovery(job) {
+    if (state.reviewJobId !== job.id) {
+      state.reviewJobId = job.id;
+      state.reviewRows = [];
+      state.reviewLoaded = false;
+      state.reviewLoading = false;
+      $("review-panel").open = false;
+      $("review-rows").replaceChildren();
+      $("review-status").textContent = "";
+      $("review-save").disabled = true;
+    }
+    const info = job.recovery || {}, policy = recoveryPolicy(info.policy), key = JSON.stringify(policy);
+    if (state.recoveryDraftId !== job.id || (state.recoveryPolicyKey !== key && !state.recoveryDirty)) {
+      $("recovery-enabled").checked = policy.enabled;
+      $("recovery-source").value = policy.source_mode;
+      $("recovery-holds").checked = policy.picture_holds;
+      $("recovery-reserve").value = String(policy.reserve_gib);
+      state.recoveryDraftId = job.id;
+      state.recoveryPolicyKey = key;
+      state.recoveryDirty = false;
+    }
+    $("recovery-low-reserve").disabled = job.failure?.category !== "storage" && policy.reserve_gib !== 2;
+    const number = (value) => Number.isInteger(value) && value >= 0 && value <= 100000 ? value : 0;
+    const calls = number(info.proxy_calls), used = number(info.budget?.used), maximum = number(info.budget?.max);
+    const policyText = info.policy_configured === false ? "尚未设置本任务的网页恢复选项。"
+      : `当前选项：${policy.enabled ? "辅助恢复已开启" : "辅助恢复已关闭"}；${policy.source_mode === "strict" ? "等待原词核对" : "疑词保守表达并保留标记"}；${policy.picture_holds ? "允许最长4秒停格" : "不自动停格"}；空间余量${policy.reserve_gib}GiB。`;
+    $("recovery-summary").textContent = policyText + (calls ? ` Proxy调用记录${calls}次。` : " 尚无Proxy恢复调用记录。")
+      + (maximum ? `文字恢复动作${used}/${maximum}次。` : "");
+    $("recovery-events").replaceChildren();
+    const actions = { source: "原词疑点复核", source_contextual: "原词疑点复核", compact: "局部台词精简", audio: "局部声音恢复", timing: "画面时间恢复", picture_hold: "画面停格处理" };
+    const statuses = { completed: "已完成", succeeded: "已完成", success: "已完成", approved: "已保存建议", failed: "未完成", pending: "已记录请求", reserved: "已记录请求", started: "处理中", editing: "文字修订中", reviewing: "独立复核中", applying: "保存修订中", interrupted: "已中断，记录保留", stopped: "已停止", canceled: "已取消", cancelled: "已取消", reused: "已复用" };
+    for (const event of (Array.isArray(info.events) ? info.events.slice(-8) : [])) {
+      const label = actions[event?.action] || "恢复检查", status = statuses[event?.status] || "已记录";
+      const count = number(event?.affected_count);
+      $("recovery-events").append(create("li", "", `${label} · ${status}${count ? ` · ${count}句` : ""}${event?.proxy_called === true ? " · 已请求Proxy" : ""}`));
+    }
+    $("recovery-record").hidden = false;
+    updateRecoveryAction();
+  }
+
+  async function loadReview() {
+    const job = state.selectedJob;
+    if (!job || !["failed", "canceled", "cancelled"].includes(job.status) || state.reviewLoading || state.reviewLoaded) return;
+    const id = job.id;
+    state.reviewLoading = true;
+    $("review-status").textContent = "正在读取待核对的原句…";
+    try {
+      const data = await request("/api/jobs/" + encodeURIComponent(id) + "/review");
+      if (state.selectedId !== id) return;
+      if (!Array.isArray(data?.rows) || data.rows.length > 8) throw new Error("核对记录暂不可用。");
+      state.reviewRows = data.rows;
+      $("review-rows").replaceChildren();
+      const stamp = (value) => Math.floor(value / 60) + "分" + String(Math.floor(value % 60)).padStart(2, "0") + "秒";
+      data.rows.forEach((row, index) => {
+        if (!/^line\d{4,}$/.test(row?.id) || typeof row.text_source !== "string" || typeof row.text_zh !== "string"
+            || !Number.isFinite(row.start_s) || !Number.isFinite(row.end_s)) throw new Error("核对记录暂不可用。");
+        const box = create("section", "review-row");
+        box.append(create("div", "review-position", `第${index + 1}句 · 原片${stamp(row.start_s)}–${stamp(row.end_s)}${row.uncertain ? " · 原词仍有疑点" : ""}`));
+        const audio = create("audio");
+        audio.controls = true;
+        audio.preload = "none";
+        audio.src = "/api/jobs/" + encodeURIComponent(id) + "/review-audio/" + encodeURIComponent(row.id);
+        audio.setAttribute("aria-label", `第${index + 1}句原声`);
+        box.append(audio);
+        for (const [field, label, value] of [["source", "原文", row.text_source], ["translation", "首选中文", row.text_zh]]) {
+          const inputId = "review-" + field + "-" + row.id;
+          const caption = create("label", "field-label", label);
+          caption.htmlFor = inputId;
+          const input = create("textarea");
+          input.id = inputId;
+          input.maxLength = 4000;
+          input.value = value;
+          input.addEventListener("input", () => { $("review-save").disabled = state.reviewSaving || state.recoverPending; });
+          box.append(caption, input);
+        }
+        $("review-rows").append(box);
+      });
+      state.reviewLoaded = true;
+      $("review-status").textContent = data.rows.length ? "只修改需要更正的句子，再保存。原声仅在本机处理。" : "当前没有需要人工核对的原句。";
+      $("review-save").disabled = true;
+    } catch (error) {
+      if (state.selectedId === id) $("review-status").textContent = displayError(error, "暂时无法读取原句，请收起后重新展开。");
+    } finally { if (state.selectedId === id) state.reviewLoading = false; }
+  }
+
+  async function saveReview() {
+    if (!state.selectedId || state.reviewSaving || state.recoverPending) return;
+    const id = state.selectedId, corrections = [];
+    for (const row of state.reviewRows) {
+      const source = $("review-source-" + row.id)?.value.trim(), translated = $("review-translation-" + row.id)?.value.trim();
+      const correction = { id: row.id };
+      if (source !== row.text_source.trim()) correction.source_text = source;
+      if (translated !== row.text_zh.trim()) correction.preferred_translation = translated;
+      if (Object.keys(correction).length > 1) corrections.push(correction);
+    }
+    if (!corrections.length) { $("review-status").textContent = "尚无更正，无需保存。"; return; }
+    if (corrections.some((row) => Object.entries(row).some(([key, value]) => key !== "id" && !value))) {
+      $("review-status").textContent = "原文和首选中文不能留空。";
+      return;
+    }
+    state.reviewSaving = true;
+    $("review-save").disabled = true;
+    $("review-status").textContent = "正在保存更正…";
+    updateRecoveryAction();
+    try {
+      const data = await request("/api/jobs/" + encodeURIComponent(id) + "/review", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ corrections }),
+      });
+      if (state.selectedId !== id) return;
+      if (data?.saved !== true) throw new Error("更正尚未保存。");
+      state.reviewRows = state.reviewRows.map((row) => ({ ...row,
+        text_source: $("review-source-" + row.id).value.trim(), text_zh: $("review-translation-" + row.id).value.trim() }));
+      $("review-status").textContent = "更正已另存。可点击“仅从断点重试”，受影响译稿会重新复核。";
+      await refreshSelected(true);
+    } catch (error) {
+      if (state.selectedId === id) {
+        $("review-status").textContent = displayError(error, "更正未保存，输入内容保留，请稍后再试。");
+        $("review-save").disabled = false;
+      }
+    } finally { state.reviewSaving = false; updateRecoveryAction(); }
+  }
+
   function renderSelected(job) {
     $("preview-empty").hidden = true;
     $("job-detail").hidden = false;
     $("detail-status").hidden = false;
-    $("detail-status").textContent = statusNames[job.status] || "状态待确认";
+    $("detail-status").textContent = job.status === "failed" && job.failure?.title
+      ? displayError(job.failure.title, "等待检查") : statusNames[job.status] || "状态待确认";
     $("detail-status").dataset.status = job.status || "unknown";
     $("detail-title").textContent = jobTitle(job);
     const progress = percent(job);
@@ -381,13 +546,39 @@
     $("progress-note").textContent = hasPilot
       ? "完整意群的小样已可试听，当前为纯人声。其余配音继续生成，最终会切换为完整视频。"
       : notes[job.status] || "正在读取任务状态。";
+    if (job.status === "failed" && job.failure) {
+      const completed = Number(job.failure.completed), total = Number(job.failure.total);
+      const count = Number.isInteger(completed) && Number.isInteger(total) && total > 0
+        && completed >= 0 && completed <= total && total <= 100000
+        ? `机器译稿 ${completed}/${total} 条已保存。` : "已通过检查的步骤均已保留。";
+      $("progress-note").textContent = count + displayError(job.failure.next_action, "请先处理提示项目，再从断点继续。");
+    }
     const retryable = ["failed", "canceled", "cancelled"].includes(job.status);
     $("job-error").hidden = !retryable;
     if (retryable) {
-      $("job-error-title").textContent = job.status === "failed" ? "这次处理没有完成" : "这个任务已取消";
-      $("job-error-copy").textContent = job.status === "failed" ? displayError(job.error) : "需要继续时，重新提交这段素材即可。";
-      $("retry-button").textContent = "继续这个任务";
+      const failure = job.status === "failed" ? job.failure : null;
+      $("job-error-title").textContent = failure?.title ? displayError(failure.title, "等待检查")
+        : job.status === "failed" ? "这次处理没有完成" : "这个任务已取消";
+      let explanation = failure?.message ? displayError(failure.message)
+        : job.status === "failed" ? displayError(job.error) : "需要时可以继续此任务。";
+      if (failure?.category === "unknown" && job.error) {
+        const actual = displayError(job.error);
+        if (actual && !explanation.includes(actual)) explanation += " " + actual;
+      }
+      const positions = Array.isArray(failure?.source_windows) ? failure.source_windows.slice(0, 6)
+        .filter((item) => Number.isFinite(item?.start_s) && Number.isFinite(item?.end_s)
+          && item.start_s >= 0 && item.end_s >= item.start_s && item.end_s <= 172800)
+        .map((item) => {
+          const stamp = (value) => Math.floor(value / 60) + "分" + String(Math.floor(value % 60)).padStart(2, "0") + "秒";
+          return stamp(item.start_s) + "–" + stamp(item.end_s);
+        }) : [];
+      if (positions.length) explanation += " 原片位置：" + positions.join("、") + "。";
+      $("job-error-copy").textContent = explanation;
+      const blocked = failure?.can_retry === false;
+      $("retry-button").textContent = blocked ? "等待有效修订" : "仅从断点重试";
+      $("retry-button").disabled = blocked;
     }
+    renderRecovery(job);
     $("cancel-button").hidden = !["queued", "running"].includes(job.status);
     $("cancel-button").disabled = state.cancelPending;
     renderArtifacts(job);
@@ -549,15 +740,42 @@
     finally { state.cancelPending = false; $("cancel-button").disabled = false; }
   });
   $("retry-button").addEventListener("click", async () => {
-    if (!state.selectedJob || state.busy) return;
-    $("retry-button").disabled = true;
+    if (!state.selectedJob || state.busy || state.recoverPending) return;
+    if (state.selectedJob.failure?.can_retry === false) {
+      toast("当前没有新的修订，请先核对提示的内容。");
+      return;
+    }
+    state.recoverPending = true;
+    updateRecoveryAction();
     try {
       const result = await request("/api/jobs/" + encodeURIComponent(state.selectedId) + "/retry", { method: "POST" });
       await selectJob(String(result.id), parsedJob(result));
       await refreshJobs();
       toast("任务已继续，会复用通过校验的已有步骤。");
     } catch (error) { toast(displayError(error, "暂时无法继续，请稍后重试。")); }
-    finally { $("retry-button").disabled = false; }
+    finally { state.recoverPending = false; updateRecoveryAction(); }
+  });
+  for (const id of ["recovery-enabled", "recovery-source", "recovery-holds", "recovery-reserve"]) $(id).addEventListener("change", () => {
+    state.recoveryDirty = true;
+    updateRecoveryAction();
+  });
+  $("review-panel").addEventListener("toggle", () => { if ($("review-panel").open) loadReview(); });
+  $("review-save").addEventListener("click", saveReview);
+  $("recover-button").addEventListener("click", async () => {
+    if (!state.selectedId || state.recoverPending || $("recover-button").disabled) return;
+    const id = state.selectedId, policy = recoveryDraft();
+    state.recoverPending = true;
+    updateRecoveryAction();
+    try {
+      const result = await request("/api/jobs/" + encodeURIComponent(id) + "/recover", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ policy }),
+      });
+      state.recoveryDirty = false;
+      await selectJob(String(result.id), parsedJob(result));
+      await refreshJobs();
+      toast("恢复选项已保存，任务已排队；实际恢复动作会记录在这里。");
+    } catch (error) { toast(displayError(error, "恢复没有开始，已有成果保留。请刷新查看诊断。")); }
+    finally { state.recoverPending = false; updateRecoveryAction(); }
   });
   for (const id of ["result-video", "result-audio"]) $(id).addEventListener("error", () => {
     if ($(id).getAttribute("src")) toast("这个文件暂时无法预览，可以尝试下载或稍后刷新。");

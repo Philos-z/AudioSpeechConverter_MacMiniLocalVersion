@@ -5,6 +5,7 @@ Every subprocess uses the supplied supervisor (logs, cancellation/process groups
 Machine-reviewed drafts retain human_reviewed=False and unknown source rights.
 """
 import argparse
+import ast
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_EXCEPTION, CancelledError
 import fcntl
 import errno
@@ -51,6 +52,25 @@ class StageFailure(RuntimeError):
         super().__init__(message)
         self.stage=stage
         self.failure_metadata=dict(failure_metadata)
+
+
+class WebsiteRepairReady(RuntimeError):
+    """A fixed local action changed bound data; resume with ordinary SHA checks."""
+    def __init__(self,action,details):
+        super().__init__('网站已保存局部恢复数据，将从断点继续')
+        self.action=action;self.details=details
+
+
+def implementation_signature(names,source_path=None):
+    """Unrelated orchestration edits must not invalidate expensive stage data."""
+    tree=ast.parse(Path(source_path or __file__).read_text())
+    functions={n.name:n for n in tree.body if isinstance(n,(ast.FunctionDef,ast.ClassDef))}
+    return key([ast.dump(functions[name],include_attributes=False) for name in names])
+
+
+def speaker_implementation_signature(source_path=None):
+    return implementation_signature(('single_speaker','check_speakers','regroup_job',
+        'regroup_sentence_rows','german_sentence_end'),source_path)
 
 
 def _failure_event(text,nonce):
@@ -234,6 +254,53 @@ def geometry(probe):
     if abs(width/height-16/9)>.01:
         raise RuntimeError('首版自动导出目前只支持16:9横屏；已保留源方向，未拉伸或假称导出成功。4:3和竖屏待适配。')
     return {'width':960,'height':540,'fps':25,'preserve_source_orientation':True}
+
+
+def reviewed_source_plan(folder,original_plan,source_sha256):
+    """Apply an evidence-bound derived plan, keeping all original files intact."""
+    folder=Path(folder).resolve();original_plan=Path(original_plan)
+    original=read(original_plan)['segments'];receipt=folder/'source_plan_revision.json'
+    if not receipt.is_file():return original,None
+    revision=read(receipt);derived=folder/'revisions/source_review_v1/segments.plan.json'
+    if (revision.get('schema')!='source_plan_revision_v1'
+            or revision.get('original_plan_sha256')!=digest(original_plan)
+            or revision.get('input_source_sha256')!=source_sha256
+            or revision.get('revised_plan_sha256')!=digest(derived)):
+        raise RuntimeError('源文修订与原视频或原计划绑定不符；未改写原始成果')
+    changes=revision.get('changes');revised=read(derived)['segments']
+    if not isinstance(changes,list) or not changes:raise ValueError('源文修订缺少逐条证据')
+    by_id={row['segment_id']:row for row in original};change_map={}
+    for change in changes:
+        sid=change.get('segment_id');action=change.get('action');evidence=change.get('evidence')
+        if (sid not in by_id or sid in change_map or action not in {'replace_source_text','exclude_asr_duplicate'}
+                or not isinstance(evidence,list) or not evidence
+                or change.get('original_text_sha256')!=hashlib.sha256(by_id[sid]['text_de'].encode()).hexdigest()):
+            raise ValueError('源文修订编号、原文或证据不完整')
+        for proof in evidence:
+            path=folder/proof['path'];actual=path.resolve()
+            if (path.is_symlink() or not actual.is_relative_to(folder/'revisions/source_review_v1/evidence')
+                    or not actual.is_file() or digest(actual)!=proof['sha256']):
+                raise ValueError('源文修订证据位置或哈希不符')
+        if action=='exclude_asr_duplicate' and (change.get('zero_duration_words',0)<4
+                or change.get('crop_asr_confirms_no_repetition') is not True):
+            raise ValueError('重复识别排除证据不足')
+        change_map[sid]=change
+    expected=[r['segment_id'] for r in original if change_map.get(r['segment_id'],{}).get('action')!='exclude_asr_duplicate']
+    if [r['segment_id'] for r in revised]!=expected:raise ValueError('源文修订改变了未授权的台词顺序或编号')
+    for row in revised:
+        sid=row['segment_id'];before=by_id[sid];change=change_map.get(sid)
+        if change:
+            if (not isinstance(row.get('text_de'),str) or not row['text_de'].strip()
+                    or row.get('text_source')!=row['text_de']
+                    or change.get('replacement_text_sha256')!=hashlib.sha256(row['text_de'].encode()).hexdigest()
+                    or {k:v for k,v in row.items() if k not in {'text_de','text_source'}}
+                        !={k:v for k,v in before.items() if k not in {'text_de','text_source'}}):
+                raise ValueError('源文修订改变了时间、人物或未批准字段')
+        elif row!=before:raise ValueError('源文修订改变了未列入修订的台词')
+    return revised,{'receipt':str(receipt),'receipt_sha256':digest(receipt),
+        'original_rows':len(original),'derived_rows':len(revised),'changes':len(changes),
+        'original_asr_and_plan_preserved':True,'unresolved':revision.get('unresolved',[]),
+        'blocking_unresolved':revision.get('blocking_unresolved',[])}
 
 
 def validate_translations(before,after,report):
@@ -446,12 +513,24 @@ class Flow:
         self.warnings=['机器译配草稿，尚未经过人工试听。素材改编和声音使用授权状态未知，未标记为已授权。',
             '说话人是声学分组；Demucs可能残留原对白或分离伪影。']
         self.started=time.perf_counter();self.ledger={}
+        from website_recovery import normalize_policy
+        self.website_policy=normalize_policy(self.options.get('website_recovery',{}))
+        self._owned_website_text_argv=None
+        self.deadline=self.started+14400
+        self._last_space_check=0.;self._space_low=False
         self._state_lock=threading.RLock()
         self.py=self.root/'vendor/index-tts/.venv/bin/python'
         self.mlx_py=self.root/'vendor/mlx-indextts2-inference/.venv/bin/python'
         self.asr_py=self.root/'envs/asr/bin/python'
     def check(self):
         if self.cancelled():raise RuntimeError('任务已取消，已保留中间结果')
+        if time.perf_counter()>self.deadline:raise RuntimeError('本次运行已达到4小时时间预算，已保留断点')
+        if self.resource_low():raise RuntimeError('磁盘空间不足：运行中剩余空间低于2GiB，已停止并保留原素材')
+    def resource_low(self):
+        if time.perf_counter()-self._last_space_check>1:
+            self._last_space_check=time.perf_counter()
+            self._space_low=shutil.disk_usage(self.root).free<2*1024**3
+        return self._space_low
     def emit(self,stage,progress,details=None):
         # Keep the monotonic update and its callback in one critical section.
         # Otherwise a slower thread can publish an older progress value last.
@@ -468,7 +547,8 @@ class Flow:
         def line(text):
             check_command()
             if on_line:on_line(text)
-        owned_translation=[str(x) for x in argv]==[str(x) for x in self.internal('_translate')]
+        owned_translation=([str(x) for x in argv]==[str(x) for x in self.internal('_translate')]
+            or tuple(str(x) for x in argv)==self._owned_website_text_argv)
         nonce=secrets.token_hex(32) if owned_translation else None
         observed=[];confirmed=[]
         original_line=line
@@ -483,10 +563,14 @@ class Flow:
         environment.pop(STAGE_EVENT_NONCE_ENV,None)
         if nonce:environment[STAGE_EVENT_NONCE_ENV]=nonce
         environment['PATH']='/opt/homebrew/bin:/opt/homebrew/opt/ffmpeg-full/bin:'+environment.get('PATH','/usr/bin:/bin')
-        kwargs={'cwd':str(self.root),'env':environment,'on_line':line,'timeout':timeout}
-        if should_abort is not None:kwargs['should_abort']=should_abort
+        kwargs={'cwd':str(self.root),'env':environment,'on_line':line,
+            'timeout':min(timeout,max(1,self.deadline-time.perf_counter())),
+            'should_abort':lambda:self.resource_low() or bool(should_abort and should_abort())}
         began=time.perf_counter()
         try:result=self.runner([str(x) for x in argv],**kwargs)
+        except Exception:
+            self.check()
+            raise
         finally:
             with self._state_lock:
                 timings=self.metrics['stage_wall_s'];timings[stage]=timings.get(stage,0)+time.perf_counter()-began
@@ -512,6 +596,25 @@ class Flow:
             self.ledger[name]={'fingerprint':key(signature),'outputs':[{'path':str(Path(p).resolve()),'sha256':digest(p)} for p in outputs]}
             save(self.folder/'pipeline_receipts.json',self.ledger)
     def internal(self,action,*args):return [self.py,Path(__file__).resolve(),action,'--root',self.root,'--job',self.name,*args]
+    def text_repair(self,phase,ids=None,reason=None):
+        argv=[self.asr_py,'-B',script(self.root,'website_recovery.py'),phase,
+            '--root',self.root,'--job',self.name,'--policy-json',json.dumps(self.website_policy)]
+        if ids is not None:argv.extend(['--ids',json.dumps(ids),'--reason',reason])
+        hints=self.folder/'translation/source_review_hints.json'
+        before=digest(hints) if hints.is_file() else None
+        self._owned_website_text_argv=tuple(str(x) for x in argv)
+        try:
+            self.command('Proxy处理局部译稿并独立复核',self.progress,self.progress,argv,timeout=600)
+        finally:self._owned_website_text_argv=None
+        changed=(digest(hints) if hints.is_file() else None)!=before
+        if phase=='compact' and not changed:
+            raise RuntimeError('Proxy已核对该句，但没有可进一步采用的压短修订；请在网站核对原句或译稿，已有声音均保留')
+        return changed
+    def media_recovery(self):
+        return __import__('media_recovery')
+    def space_reserve(self,config):
+        return (self.website_policy['reserve_gib'] if self.website_policy['enabled']
+            else float(config.get('minimum_free_gib',8)))
     def stages(self):
         self.check()
         mastering=mastering_policy(self.options)
@@ -555,7 +658,7 @@ class Flow:
             if duration>float(config.get('max_video_seconds',1800)):
                 raise RuntimeError('视频较长，请通过网页新建任务，按每集最多30分钟自动分集')
             self.metrics['space_preflight']=space_preflight(duration,shutil.disk_usage(self.root).free,
-                float(config.get('minimum_free_gib',8)))
+                self.space_reserve(config))
             save(self.folder/'space_preflight.json',self.metrics['space_preflight'])
             self.command('提取原声音轨',6,9,[FFMPEG,'-v','error','-y','-i',source_file,'-map',f'0:a:{track}','-vn','-ac','2','-ar','48000','-c:a','pcm_s24le',self.folder/'audio/original.wav'])
             self.command('准备语音识别音轨',9,10,[FFMPEG,'-v','error','-y','-i',self.folder/'audio/original.wav','-ac','1','-ar','16000','-c:a','pcm_s16le',self.folder/'audio/asr16k.wav'])
@@ -563,7 +666,7 @@ class Flow:
         source=read(source_json);geometry(source['probe'])
         if 'space_preflight' not in self.metrics:
             self.metrics['space_preflight']=space_preflight(float(source['duration_s']),shutil.disk_usage(self.root).free,
-                float(config.get('minimum_free_gib',8)))
+                self.space_reserve(config))
             save(self.folder/'space_preflight.json',self.metrics['space_preflight'])
         save(self.folder/'processing_request.json',{'processing_authorized':True,'scope':'private_local_evaluation',
             'requested_via':'explicit local web start','source_rights_verified':False,'human_reviewed':False,
@@ -577,7 +680,7 @@ class Flow:
             source.update(metadata);save(source_json,source)
             self.remember('prepare',prepare_signature,[source_json,self.folder/'audio/original.wav',self.folder/'audio/asr16k.wav'])
         plan=self.folder/'segments.plan.json';speaker_signature={'asr_sha':digest(asr),'vocals_sha':digest(self.folder/'separated/htdemucs/original/vocals.wav'),'code':digest(script(self.root,'speaker_plan.py')),
-            'sentence_regroup':'raw_assignments_sentence24_v1','regroup_code':digest(Path(__file__))}
+            'sentence_regroup':'raw_assignments_sentence24_v1','regroup_code':speaker_implementation_signature()}
         correction=self.folder/'speaker_corrections.json'
         if correction.is_file():
             helper=script(self.root,'speaker_corrections.py')
@@ -590,15 +693,38 @@ class Flow:
             self.command('按原文完整句重新编排',46,46,self.internal('_regroup_sentences'))
             refs=[self.root/s['reference'] for s in read(self.folder/'speakers.json').values()]
             self.remember('speakers',speaker_signature,[plan,self.folder/'speakers.json',self.folder/'sentence_group_receipt.json',*refs])
-        planned=read(plan)['segments']
+        planned,source_revision=reviewed_source_plan(self.folder,plan,digest(Path(source['input'])))
+        if source_revision:
+            self.metrics['source_plan_revision']=source_revision
+            self.warnings.append('已使用有原片证据的派生源文修订；原始识别和计划均保留。')
+            if source_revision['unresolved']:
+                self.warnings.append('部分原文仍有待核对：'+','.join(source_revision['unresolved']))
+        translation_input=self.folder/'translation/input.json'
+        if (source_revision and source_revision['blocking_unresolved']
+                and self.website_policy['enabled'] and self.website_policy['source_mode']=='contextual'):
+            save(translation_input,{'segments':planned,**source_language_metadata(actual_language)})
+            while source_revision['blocking_unresolved']:
+                before=tuple(source_revision['blocking_unresolved'])
+                self.text_repair('source')
+                planned,source_revision=reviewed_source_plan(self.folder,plan,digest(Path(source['input'])))
+                if tuple(source_revision['blocking_unresolved'])==before:
+                    raise RuntimeError('Proxy未能消除当前原词阻碍，请在网站核对原句后继续')
+            self.metrics['source_plan_revision']=source_revision
         preview=float(self.options.get('preview_seconds',0) or 0)
         if preview:
             if not math.isfinite(preview) or preview<=0:raise ValueError('预览长度无效')
             planned=[r for r in planned if r['start_s']<preview] or planned[:1]
             self.warnings.append('本任务仅生成完整台词边界内的前段预览，未生成后续整片。')
-        translation_input=self.folder/'translation/input.json';save(translation_input,{'segments':planned,**source_language_metadata(actual_language)})
+        save(translation_input,{'segments':planned,**source_language_metadata(actual_language)})
+        old_group_plan=self.folder/'tts/semantic_group_plan.json'
+        previous_group_plan=None
+        if old_group_plan.is_file():
+            previous_group_plan=self.folder/'recovery/group_plan_snapshots'/(digest(old_group_plan)+'.json')
+            if not previous_group_plan.exists():save(previous_group_plan,read(old_group_plan))
         translated=self.folder/'segments.json';translation_report=self.folder/'translation/report.json'
         tsig={'plan':key(planned),'speakers':digest(self.folder/'speakers.json'),
+            'source_review_hints_sha256':digest(self.folder/'translation/source_review_hints.json') if (self.folder/'translation/source_review_hints.json').is_file() else None,
+            'source_plan_revision_sha256':digest(self.folder/'source_plan_revision.json') if (self.folder/'source_plan_revision.json').is_file() else None,
             'source_language':actual_language,'proxy_client_code':digest(Path(__file__).with_name('proxy_client.py')),'method':'actual_two_pass_numeric_checks'}
         if not self.cached('translation',tsig,[]):
             def tr_line(text):
@@ -609,11 +735,16 @@ class Flow:
             validate_translations(planned,read(translated)['segments'],read(translation_report))
             self.remember('translation',tsig,[translated,translation_report])
         validate_translations(planned,read(translated)['segments'],read(translation_report))
+        if previous_group_plan and self.website_policy['enabled']:
+            self.media_recovery().rebind_no_join(self.root,self.folder,previous_group_plan)
+        if source_revision and source_revision['blocking_unresolved']:
+            raise RuntimeError('机器译稿已保存；原文词义仍待核对：'+','.join(source_revision['blocking_unresolved'])+
+                '。未启动配音或最终导出，不能标记为最终完成。')
         rows=read(translated)['segments']
         grouping=self.options.get('tts_grouping','sentence_v1')
         if grouping not in ('sentence_v1',DEFAULT_TTS_GROUPING):raise ValueError('无效的连续配音策略')
         background=self.folder/'audio/background_independent.wav'
-        bsig={'no_vocals_sha':digest(self.folder/'separated/htdemucs/original/no_vocals.wav'),'duration':source['duration_s'],'code':digest(Path(__file__)),'gain_body_db':10,'gain_titles_db':4}
+        bsig={'no_vocals_sha':digest(self.folder/'separated/htdemucs/original/no_vocals.wav'),'duration':source['duration_s'],'code':implementation_signature(('background_job',)),'gain_body_db':10,'gain_titles_db':4}
         if not self.cached('background',bsig,[]):
             self.command('准备独立场景背景',58,60,self.internal('_background'),timeout=1800)
             self.remember('background',bsig,[background,self.folder/'audio/background_report.json'])
@@ -645,6 +776,18 @@ class Flow:
         # Publish complete original groups during this same runner lifetime.
         # This creates no additional synthesis, model load, cut or join.
         pilot=None;pilot_done=False;pilot_payload=None
+        old_pilot=self.folder/'outputs/voice_pilot/pilot_receipt.json'
+        if pilot_limit and grouped and old_pilot.is_file():
+            published=read(old_pilot)
+            if (published.get('schema')=='early_voice_pilot_v1' and published.get('job_id')==self.name
+                    and published.get('human_reviewed') is False and published.get('complete_job') is False
+                    and (published.get('source_tts_job')!=tts_job
+                        or published.get('full_selected_count')!=len(tts_rows))):
+                # Historical small samples remain available; they are never
+                # republished as evidence for a revised group/audio identity.
+                pilot_limit=0
+                self.metrics['early_voice_pilot']={'enabled':False,'historical_pilot_preserved':True,
+                    'reason':'source_group_plan_changed','current_voice_approval_claimed':False}
         if pilot_limit and grouped:
             helper=script(self.root,'early_voice_pilot.py')
             pilot=_voice_pilot_module(self.root)
@@ -728,8 +871,29 @@ class Flow:
                 '--cache-dir',self.root/'cache/group_subtitle_whisper_v1','--progress-json'])
             alignment=read(alignment_index)
             if alignment.get('all_groups_ready') is not True:
+                if self.website_policy['enabled']:
+                    repaired=self.media_recovery().repair_alignment(self.root,self.folder,group_plan,alignment_index)
+                    if repaired.get('changed'):raise WebsiteRepairReady('split_failed_groups',repaired)
+                    ids=repaired.get('unresolved_ids',[])
+                    if ids:
+                        self.text_repair('compact',ids[:8],'acoustic')
+                        raise WebsiteRepairReady('compact_failed_speech',{'source_rows':ids[:8]})
                 raise RuntimeError('部分连续配音的字幕边界需核对；已保留全部台词和完整声音')
+            if self.website_policy['enabled']:
+                quality=self.folder/'tts'/('audio_quality_'+key(group_manifest_identity(manifest))[:16]+'.json')
+                self.command('检查配音声学异常',81,81,[self.asr_py,'-B',script(self.root,'media_recovery.py'),
+                    'audio-quality','--root',self.root,'--plan',group_plan,'--manifest',stable_manifest,
+                    '--output',quality],timeout=1800)
+                checked=read(quality)
+                if checked.get('complete') is not True:raise RuntimeError('配音声学检查尚未完成，已保留全部音频')
+                self.metrics['audio_quality']={k:checked[k] for k in checked if k not in {'rows','source_rows','flagged_groups'}}
+                ids=checked.get('needs_repair_ids',[])
+                if ids:
+                    self.text_repair('compact',ids[:8],'acoustic')
+                    raise WebsiteRepairReady('compact_acoustic_failure',{'source_rows':ids[:8]})
             export_identity.update(group_plan=digest(group_plan),alignment_index=digest(alignment_index))
+            hold_policy=self.folder/'tts/picture_holds.json'
+            export_identity['picture_holds']=digest(hold_policy) if hold_policy.is_file() else None
             run_metrics_path=align_dir/'alignment_run_metrics.json'
             alignment_run=read(run_metrics_path) if run_metrics_path.is_file() else alignment
             self.metrics['continuous_grouping']['subtitle_alignment']={k:alignment_run[k] for k in
@@ -745,7 +909,22 @@ class Flow:
             self.command('编排完整语意与双语字幕',81,83,argv)
         audit=read(candidate/audit_name)
         if audit['issues']:
-            save(self.folder/'timing_review_required.json',{'issues':audit['issues'],'human_reviewed':False,'audio_truncated':False})
+            save(self.folder/'timing_review_required.json',{'issues':audit['issues'],'human_reviewed':False,
+                'audio_truncated':False,'source_segments_sha256':digest(translated),
+                'plan_sha256':digest(group_plan) if grouped else None})
+            if grouped and self.website_policy['enabled'] and self.website_policy['picture_holds']:
+                repair_result=self.folder/'tts/picture_recovery_result.json'
+                self.command('检查局部画面并保留完整配音',self.progress,self.progress,
+                    [self.asr_py,'-B',script(self.root,'media_recovery.py'),'picture-holds','--root',self.root,
+                     '--plan',group_plan,'--source',source_json,'--edl',candidate/'edit_decisions.json',
+                     '--audit',candidate/audit_name,'--policy-json',json.dumps(self.website_policy),
+                     '--output',repair_result],timeout=900)
+                repaired=read(repair_result)
+                if repaired.get('changed'):raise WebsiteRepairReady('reviewed_picture_holds',repaired)
+                ids=repaired.get('overlong_ids',[])
+                if ids:
+                    self.text_repair('compact',ids[:8],'timing')
+                    raise WebsiteRepairReady('compact_picture_overrun',{'source_rows':ids[:8]})
             raise RuntimeError('部分中文台词超出安全画面时间；已保留完整音频和逐句清单，未截字或强行加速')
         for phase,stage,lo,hi in [('mix','混合连续背景与中文配音',83,89),('render','导出540p双语视频',89,97),('verify','检查完整媒体',97,99)]:
             names=({'mix':'group_mix_report.json','render':'group_export.json','verify':'group_verification.json'} if grouped
@@ -819,7 +998,7 @@ class Flow:
         """
         from episode_planner import plan_episodes, slice_asr, EpisodePlanningError
         self.metrics['space_preflight']=space_preflight(duration,shutil.disk_usage(self.root).free,
-            float(config.get('minimum_free_gib',8)))
+            self.space_reserve(config))
         save(self.folder/'space_preflight.json',self.metrics['space_preflight'])
         asr_audio=self.folder/'audio/full_source_asr16k.wav'
         asr=self.folder/'segments.full_source.asr.json'
@@ -878,7 +1057,8 @@ class Flow:
                     {**safe,'episode_index':number,'episode_count':total,**source_language_metadata(actual)})
             # The enclosing run_job already owns the only heavy-model lock.
             child_started=time.perf_counter()
-            result=_run_with_recovery(self.root,child_job,update,self.runner,self.cancelled,child_started,0)
+            result=_run_with_recovery(self.root,child_job,update,self.runner,self.cancelled,child_started,0,
+                deadline=self.deadline)
             if result['duration_s']>episode_max+.001:
                 if replan_attempt>=2:
                     raise RuntimeError('本集自然配音后仍超过时长上限，需检查分集边界；中间结果已保留')
@@ -957,7 +1137,7 @@ class Flow:
         inputs=self.root/'inputs'/self.name;inputs.mkdir(parents=True,exist_ok=True)
         existing=list(inputs.glob('source.*'));video=next((p for p in existing if p.suffix.lower() in ('.mp4','.mkv','.webm','.mov')),None)
         if video:return video
-        reserve=math.ceil(float(read(self.root/'config/local.json').get('minimum_free_gib',8))*1024**3)
+        reserve=math.ceil(self.space_reserve(read(self.root/'config/local.json'))*1024**3)
         margin=512*1024**2
         def low_space():return shutil.disk_usage(self.root).free<reserve+margin
         if low_space():raise RuntimeError('空间不足以接收视频，需先腾出空间；未删除已有素材')
@@ -1093,12 +1273,12 @@ def run_job(root,job,update,run_command,is_cancelled):
         return _run_with_recovery(root,job,update,run_command,is_cancelled,began,waited)
 
 
-def _run_with_recovery(root,job,update,run_command,is_cancelled,started,waited):
+def _run_with_recovery(root,job,update,run_command,is_cancelled,started,waited,deadline=None):
     # No model gets arbitrary file/code/config access. Advice is one supervised
     # CPU child; the parent validates its exact persisted decision again. Each
     # retry retains this GPU lock and runs the same job/options through the
     # original SHA-verifying stage receipts and per-batch translation caches.
-    attempts=[];recoveries=[];pending_attempt=None;controller=None;progress=0.
+    attempts=[];recoveries=[];pending_attempt=None;controller=None;progress=0.;data_rounds=[]
     recovery_wall=0.;folder=root/'jobs'/job['id']
     def emit(stage,value,details=None):
         nonlocal progress
@@ -1124,17 +1304,29 @@ def _run_with_recovery(root,job,update,run_command,is_cancelled,started,waited):
             wall_seconds=time.perf_counter()-started,status=status,
             pipeline_attempts=attempts,recovery={'enabled':True,'advice_wall_seconds':recovery_wall,
                 'records':recoveries,'data_only_actions':True,'arbitrary_code_or_config_changes':False,
-                'verified_output_reuse_action_enabled':False,'failed_and_advice_wait_included':True})
+                'verified_output_reuse_action_enabled':False,'failed_and_advice_wait_included':True,
+                'website_data_repairs':data_rounds,'max_data_repair_rounds_per_run':6,
+                'wall_budget_seconds':14400})
         save(folder/'web_pipeline_metrics.json',value)
         return value
     while True:
         flow=Flow(root,job,emit,run_command,is_cancelled);attempt_began=time.perf_counter()
+        flow.deadline=deadline if deadline is not None else started+14400
         try:
             result=flow.stages()
         except Exception as error:
             cancelled=bool(is_cancelled())
             attempt_record(flow,'cancelled' if cancelled else 'failed',time.perf_counter()-attempt_began,error)
             outcome('cancelled' if cancelled else 'failed')
+            if not cancelled and isinstance(error,WebsiteRepairReady):
+                if len(data_rounds)>=6:
+                    metrics(flow.metrics,'failed')
+                    raise RuntimeError('已达到本次网站局部恢复次数预算，全部断点和原因已保存') from None
+                data_rounds.append({'action':error.action,'status':'bound_data_saved'})
+                metrics(flow.metrics,'recovering')
+                emit('局部问题已处理，从已核验断点继续',progress,{'recovery_action':error.action,
+                    'recovery_round':len(data_rounds),'models_parallel':False,'human_reviewed':False})
+                continue
             if cancelled or not isinstance(error,StageFailure):
                 metrics(flow.metrics,'cancelled' if cancelled else 'failed');raise
             recovery=_recovery_module(root)
@@ -1230,13 +1422,28 @@ def translate_job(root,folder):
     from proxy_client import translate_segments,ProxyTransportError,emit_transport_failure
     data=read(folder/'translation/input.json');rows=data['segments']
     language=normalize_language(data.get('source_language','de'),allow_auto=False)
+    review_scope=None
+    if (folder/'translation/source_review_hints.json').is_file():
+        source=read(folder/'source.json')
+        review_scope,_=reviewed_source_plan(folder,folder/'segments.plan.json',digest(Path(source['input'])))
+        if rows!=review_scope[:len(rows)]:raise ValueError('预览译稿不是当前源计划的完整前缀')
     def progress(done,total):print(json.dumps({'event':'translation_progress','completed':done,'total':total}),flush=True)
     try:
-        updated,report=translate_segments(rows,root,progress=progress,diagnostic_dir=folder/'translation/diagnostics',source_language=language)
+        updated,report=translate_segments(rows,root,progress=progress,diagnostic_dir=folder/'translation/diagnostics',
+            source_language=language,review_scope=review_scope)
     except ProxyTransportError as error:
         emit_transport_failure(error.failure_metadata,event='proxy_stage_failure')
         raise
     validate_translations(rows,updated,report)
+    revision_path=folder/'source_plan_revision.json'
+    if revision_path.is_file():
+        revision=read(revision_path);pending=set(revision.get('blocking_unresolved',[]))
+        report.update(source_revision_receipt_sha256=digest(revision_path),
+            blocking_unresolved_source_rows=sorted(pending),
+            source_transcript_uncertainties=revision.get('unresolved',[]))
+        if pending:
+            report['review_status']='machine_second_pass_complete_source_review_pending'
+            updated=[{**row,'source_review_required':True} if row['segment_id'] in pending else row for row in updated]
     save(folder/'segments.json',{'schema_version':2,'segments':updated,**source_language_metadata(language),'human_reviewed':False,
         'translation_status':'machine_second_pass_complete_draft','review_method':report['review_method']})
     report.update(job=folder.name,source_segments_sha256=digest(folder/'segments.json'),

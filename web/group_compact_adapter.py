@@ -209,12 +209,69 @@ def validated_alignment(group,alignment,rows):
         'audio_frames':frames,'audio_sample_rate':rate,'generation_sidecar':str(sidecar.resolve()),'generation_sidecar_sha256':sha(sidecar)}
 
 
-def build_group_edl(plan,alignments,source,selected_groups=None,include_intro=False):
+def picture_hold_file(folder,value):
+    check(isinstance(value,str) and value and '..' not in Path(value).parts,'Invalid picture-hold evidence path')
+    path=Path(value) if Path(value).is_absolute() else folder/value
+    check(path.is_relative_to(folder),'Picture-hold evidence escapes the current job')
+    current=folder
+    check(not current.is_symlink() and not current.parent.is_symlink(),'Picture-hold job path uses a symlink')
+    for part in path.relative_to(folder).parts:
+        current=current/part
+        check(not current.is_symlink(),'Picture-hold policy/evidence cannot use symlinks')
+    actual=path.resolve()
+    check(actual.is_relative_to(folder) and actual.is_file(),'Picture-hold policy/evidence is missing or outside the current job')
+    return actual
+
+
+def picture_hold_policy(root,plan,source):
+    """Read assistant-reviewed, exact-source/group/audio picture-only consent."""
+    check(isinstance(plan.get('job'),str) and re.fullmatch(r'[A-Za-z0-9_-]{1,120}',plan['job']),'Invalid picture-hold job')
+    folder=Path(root).resolve()/'jobs'/plan['job'];path=folder/'tts/picture_holds.json'
+    if not path.exists() and not path.is_symlink():return None
+    path=picture_hold_file(folder,str(path));document=read(path)
+    check(isinstance(document,dict) and document.get('schema')=='scoped_group_picture_holds_v1'
+        and document.get('job')==plan['job'] and document.get('assistant_reviewed') is True
+        and document.get('human_reviewed') is False,'Picture-hold policy lacks exact job/review scope')
+    check(document.get('source_segments_sha256')==plan['source_segments']['sha256']==sha(plan['source_segments']['path'])
+        and document.get('source_video_sha256')==plan['source_binding']['source_video_sha256']==sha(source['input']),
+        'Picture-hold policy has stale source/video binding')
+    groups=document.get('groups');check(isinstance(groups,list) and groups,'Picture-hold groups are missing')
+    actual={tuple(group['member_ids']):group for group in plan['tts_groups']};entries={};used=set()
+    for entry in groups:
+        check(isinstance(entry,dict),'Invalid picture-hold group authorization')
+        ids=entry.get('member_ids')
+        check(isinstance(ids,list) and ids and all(isinstance(sid,str) for sid in ids)
+            and len(set(ids))==len(ids) and tuple(ids) in actual and not used.intersection(ids),
+            'Picture-hold members are unknown, reordered, duplicated or overlap')
+        used.update(ids)
+        check(isinstance(entry.get('audio_sha256'),str) and re.fullmatch(r'[a-f0-9]{64}',entry['audio_sha256']),
+            'Picture-hold audio needs an exact SHA256')
+        for field in ('source_start_s','source_boundary_s','max_freeze_s'):
+            value=entry.get(field);check(type(value) in (int,float) and math.isfinite(value),'Invalid picture-hold time or limit')
+        check(0<=entry['source_start_s']<entry['source_boundary_s'] and 0<=entry['max_freeze_s']<=4.,
+            'Picture-hold window or 4-second limit is invalid')
+        if 'picture_source_end_s' in entry:
+            end=entry['picture_source_end_s']
+            check(type(end) in (int,float) and math.isfinite(end)
+                and entry['source_start_s']+.04-1e-7<=end<=entry['source_boundary_s']+1e-7
+                and entry['source_boundary_s']-end<=.5+1e-7,
+                'Picture-hold reviewed end is outside the source window or more than .5s early')
+        proof=entry.get('frame_evidence');check(isinstance(proof,dict),'Picture-hold frame evidence is missing')
+        frame=picture_hold_file(folder,proof.get('path'))
+        check(frame.suffix.lower() in ('.jpg','.jpeg') and isinstance(proof.get('sha256'),str)
+            and re.fullmatch(r'[a-f0-9]{64}',proof['sha256']) and sha(frame)==proof['sha256'],
+            'Picture-hold JPEG frame evidence changed')
+        entries[tuple(ids)]={**entry,'frame_evidence':{'path':str(frame),'sha256':proof['sha256']}}
+    return {'policy':{'path':str(path),'sha256':sha(path)},'groups':entries}
+
+
+def build_group_edl(plan,alignments,source,selected_groups=None,include_intro=False,picture_holds=None):
     rows=validate_plan(plan);groups=plan['tts_groups'];chosen=set(selected_groups or [g['group_id'] for g in groups])
     check(chosen and chosen.issubset({g['group_id'] for g in groups}),'Unknown or empty synthesis-group selection')
     by_alignment={a['group_id']:a for a in alignments};check(len(by_alignment)==len(alignments),'Duplicate group alignment files')
     check(chosen.issubset(by_alignment),'Missing CTC alignment for selected group')
     cursor=0;clips=[];utterances=[];cues=[];issues=[];used=[]
+    reviewed_holds=[]
     if include_intro:
         check(len(chosen)==len(groups) and sum(len(g['member_ids']) for g in groups)==len(rows),'Intro retention is only allowed for the complete source-row plan')
         frames=math.floor(groups[0]['source_start_s']*25)
@@ -228,7 +285,22 @@ def build_group_edl(plan,alignments,source,selected_groups=None,include_intro=Fa
         boundary=rows[original[after]]['start_s'] if after<len(original) else source['duration_s']
         available=boundary-start;check(available>0,'Invalid/overlapping group source intervals')
         taken=min(length,available);freeze=length-taken
-        if speech-available>.35+1e-6:issues.append({'group_id':group['group_id'],'speech_s':speech,'available_source_s':available,
+        authorization=picture_holds['groups'].get(tuple(group['member_ids'])) if picture_holds else None
+        reviewed_taken=(min(taken,authorization['picture_source_end_s']-start)
+            if authorization is not None and 'picture_source_end_s' in authorization else taken)
+        reviewed_freeze=length-reviewed_taken
+        authorized=(authorization is not None and authorization['audio_sha256']==audio['audio_sha256']
+            and abs(authorization['source_start_s']-start)<1e-7
+            and abs(authorization['source_boundary_s']-boundary)<1e-7
+            and 0<=reviewed_freeze<=authorization['max_freeze_s']+1e-7 and authorization['max_freeze_s']<=4.)
+        source_overrun=speech-available>.35+1e-6
+        if authorized and (source_overrun or reviewed_taken<taken-1e-7):
+            taken,freeze=reviewed_taken,reviewed_freeze
+            reviewed_holds.append({'group_id':group['group_id'],'member_ids':group['member_ids'],
+                'audio_sha256':audio['audio_sha256'],'source_start_s':start,'source_boundary_s':boundary,
+                'picture_source_end_s':start+taken,'freeze_s':freeze,'max_freeze_s':authorization['max_freeze_s'],
+                'frame_evidence':authorization['frame_evidence'],'assistant_reviewed':True,'human_reviewed':False})
+        elif source_overrun:issues.append({'group_id':group['group_id'],'speech_s':speech,'available_source_s':available,
             'reason':'whole_group_audio_exceeds_source_window','audio_was_not_truncated':True})
         clip={'kind':'speech','segment_ids':[group['group_id']],'source_member_ids':group['member_ids'],
             'source_start_s':start,'source_end_s':start+taken,'source_duration_s':taken,'freeze_s':freeze,
@@ -250,7 +322,7 @@ def build_group_edl(plan,alignments,source,selected_groups=None,include_intro=Fa
         cues[-1]['output_end_s']=(cursor+frames)/25
         used.extend(group['member_ids']);cursor+=frames
     check(len(used)==len(set(used)),'Original source subtitle row played twice')
-    return {'schema':SCHEMA,'format':SCHEMA,'source_input':source['input'],'source_duration_s':source['duration_s'],
+    edl={'schema':SCHEMA,'format':SCHEMA,'source_input':source['input'],'source_duration_s':source['duration_s'],
         'fps':25,'width':960,'height':540,'source_picture_box':[0,0,960,540],'duration_s':cursor/25,'frames':cursor,
         'speech_segments':len(utterances),'tts_group_count':len(utterances),'source_row_count':len(used),
         'source_plan_row_count':len(rows),'partial_preview':len(used)!=len(rows),'selected_source_ids':used,
@@ -261,6 +333,12 @@ def build_group_edl(plan,alignments,source,selected_groups=None,include_intro=Fa
         'strict_ctc_rejected_groups':[a['group_id'] for a in alignments if a['group_id'] in chosen and a.get('strict_ctc_rejected')],
         'content_risks':[risk for a in alignments if a['group_id'] in chosen for risk in a.get('content_risks',[])],
         'human_reviewed':False,'full_delivery_approved':False}
+    if picture_holds is not None:
+        edl['picture_holds']={'policy':picture_holds['policy'],'applied':reviewed_holds,'count':len(reviewed_holds),
+            'max_freeze_s':max((hold['freeze_s'] for hold in reviewed_holds),default=0.),
+            'total_freeze_s':sum(hold['freeze_s'] for hold in reviewed_holds),
+            'assistant_reviewed':True,'human_reviewed':False}
+    return edl
 
 
 def build_ass(root,edl,path):
@@ -285,6 +363,7 @@ def prepare(root,plan_path,alignment_paths,source_path,receipt_path,output,selec
     check(abs(video['width']/video['height']-16/9)<.01,'This scoped group adapter requires the original 16:9 source')
     for name in ('source_video','independent_background','logo'):
         asset=assets[name];check(Path(asset['path']).stat().st_size==asset['bytes'] and sha(asset['path'])==asset['sha256'],'Changed source/background/logo receipt')
+    picture_holds=picture_hold_policy(root,plan,source)
     alignments=[read(p) for p in alignment_paths]
     for alignment in alignments:
         check(Path(alignment['plan']['path']).resolve()==Path(plan_path).resolve() and alignment['plan']['sha256']==sha(plan_path)
@@ -293,7 +372,7 @@ def prepare(root,plan_path,alignment_paths,source_path,receipt_path,output,selec
         acoustic=alignment.get('alignment_receipt',{})
         if alignment.get('schema')!='generic_group_subtitle_alignment_v1':
             check(acoustic.get('emissions_path') and sha(acoustic['emissions_path'])==acoustic['emissions_sha256'],'CTC acoustic evidence changed')
-    edl=build_group_edl(plan,alignments,source,selected_groups,include_intro)
+    edl=build_group_edl(plan,alignments,source,selected_groups,include_intro,picture_holds)
     output.mkdir(parents=True,exist_ok=True);save(output/'edit_decisions.json',edl)
     save(output/'subtitle_layout.json',build_ass(root,edl,output/'compact_bilingual.ass'))
     report={'schema':SCHEMA,'plan':str(Path(plan_path).resolve()),'plan_sha256':sha(plan_path),
@@ -304,6 +383,7 @@ def prepare(root,plan_path,alignment_paths,source_path,receipt_path,output,selec
         'duration_s':edl['duration_s'],'issues':edl['issues'],'audio_truncated':False,'models_started':False,
         'subtitle_timing_schemas':edl['subtitle_timing_schemas'],'strict_ctc_rejected_groups':edl['strict_ctc_rejected_groups'],
         'human_reviewed':False,'content_risks':edl['content_risks']}
+    if 'picture_holds' in edl:report['picture_holds']=edl['picture_holds']
     save(output/'group_adapter_report.json',report);return report
 
 

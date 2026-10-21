@@ -34,7 +34,7 @@ envs/asr/bin/python -B web/service.py status --root "$PWD"
 envs/asr/bin/python -B web/service.py stop --root "$PWD"
 ```
 
-局域网访问需要将 `PHILOS_LAN_HOST` 设置为本机实际地址，再启动服务。默认网址输出指向 `http://127.0.0.1:8766/`。服务仍限制 Host、Origin 和文件访问边界。
+局域网访问需要将 `PHILOS_LAN_HOST` 设置为本机实际地址，再启动服务。也可在本机私有 `config/local.json` 的 `web_lan_host` 保存地址；命令行和环境变量优先，仓库示例为空。默认网址输出指向 `http://127.0.0.1:8766/`。服务仍限制 Host、Origin 和文件访问边界。
 
 ## 迁移后的验收
 

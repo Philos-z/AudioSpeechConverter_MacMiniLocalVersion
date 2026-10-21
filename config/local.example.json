@@ -15,5 +15,6 @@
     "local_media_processing": true,
     "default_tts_profile": "hybrid-gpt-preserve-25-pad-eager",
     "audio_analysis_scheduling": "cpu_asr_and_single_mps_demucs"
-  }
+  },
+  "web_lan_host": ""
 }

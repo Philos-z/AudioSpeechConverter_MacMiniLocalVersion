@@ -60,6 +60,15 @@
           </select>
           <p class="field-help" id="language-help">其他语言也可选择自动识别；识别结果交给文字服务翻译并复核。每集最多30分钟，视频小于50MB。</p>
 
+          <fieldset class="recovery-settings">
+            <legend>遇到问题时</legend>
+            <label class="check-setting"><input id="new-recovery-enabled" type="checkbox" checked>让既有文字服务（Proxy）辅助恢复</label>
+            <label class="field-label" for="new-recovery-source">原词有疑点时</label>
+            <select class="text-input" id="new-recovery-source"><option value="contextual">保守意译，保留未确认标记</option><option value="strict">严格等待核对原词</option></select>
+            <label class="check-setting"><input id="new-recovery-holds" type="checkbox" checked>允许画面短暂停格，保留完整配音（每处最长4秒）</label>
+            <p class="field-help">数字、时间、人物与否定仍严格核对。默认保留8GiB空间；恢复次数有上限，原素材和已有成果保留。</p>
+          </fieldset>
+
           <details class="output-settings">
             <summary><span>输出设置</span><span class="settings-summary">保留原比例 · 540p <span aria-hidden="true">⌄</span></span></summary>
             <div class="settings-body"><div class="setting-chips"><span>保留原比例</span><span>540p 轻量成片</span><span>自然中文</span><span>中文＋原文字幕</span><span>每集小于50MB</span></div><p>长视频在可靠停顿处分集，每集最多30分钟，逐集处理。保留原文字幕，并按实际中文配音定位。</p></div>
@@ -81,7 +90,28 @@
         <div id="job-detail" hidden>
           <h3 class="detail-job-title" id="detail-title"></h3>
           <div class="job-progress" id="job-progress"><div class="progress-caption"><span id="detail-stage">等待处理</span><strong id="detail-percent">0%</strong></div><progress id="detail-progress" max="100" value="0"></progress><p class="progress-note" id="progress-note">任务进度由处理服务实时更新。</p></div>
-          <div class="job-error" id="job-error" hidden><strong id="job-error-title">这次处理没有完成</strong><p id="job-error-copy"></p><button class="secondary-button compact" id="retry-button" type="button">重新提交素材</button></div>
+          <div class="job-error" id="job-error" hidden><strong id="job-error-title">这次处理没有完成</strong><p id="job-error-copy"></p>
+            <fieldset class="recovery-settings">
+              <legend>本任务恢复选项</legend>
+              <label class="check-setting"><input id="recovery-enabled" type="checkbox">让既有文字服务（Proxy）辅助恢复</label>
+              <label class="field-label" for="recovery-source">原词有疑点时</label>
+              <select class="text-input" id="recovery-source"><option value="contextual">保守意译，保留未确认标记</option><option value="strict">严格等待核对原词</option></select>
+              <label class="check-setting"><input id="recovery-holds" type="checkbox">允许短暂停格保留完整配音（每处最长4秒）</label>
+              <label class="field-label" for="recovery-reserve">本任务的磁盘空间余量</label>
+              <select class="text-input" id="recovery-reserve"><option value="8">8GiB（默认）</option><option value="2" id="recovery-low-reserve">2GiB（仅空间不足时，本任务全程监控）</option></select>
+              <p class="field-help">仅重做必要步骤。数字、人物、否定与字幕定位检查保留；原视频和已通过校验的成果保留。</p>
+            </fieldset>
+            <details class="manual-review" id="review-panel">
+              <summary>核对原句</summary>
+              <p class="field-help">可播放本句原声，修改听错的原文或填写首选中文。保存后会复核受影响的译稿，数字等检查仍保留。</p>
+              <div id="review-rows"></div>
+              <p id="review-status" role="status"></p>
+              <button class="secondary-button compact" id="review-save" type="button" disabled>保存更正</button>
+            </details>
+            <p id="recovery-action-note" role="status"></p>
+            <div class="recovery-actions"><button class="secondary-button" id="recover-button" type="button">按这些选项恢复并继续</button><button class="text-button" id="retry-button" type="button">仅从断点重试</button></div>
+          </div>
+          <div class="recovery-record" id="recovery-record" hidden><strong>恢复记录</strong><p id="recovery-summary"></p><ol id="recovery-events"></ol></div>
           <div id="episode-preview" hidden><label class="field-label" for="episode-select">选择分集预览</label><select class="text-input" id="episode-select"></select></div>
           <div class="media-preview" id="media-preview" hidden><video id="result-video" controls playsinline preload="metadata" hidden></video><audio id="result-audio" controls preload="metadata" hidden></audio></div>
           <div class="downloads" id="downloads" hidden><p class="download-label">下载审稿预览</p><div class="download-links" id="download-links"></div></div>

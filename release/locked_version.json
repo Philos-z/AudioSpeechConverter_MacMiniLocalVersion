@@ -1,7 +1,7 @@
 {
   "schema": "source_only_locked_release_v1",
-  "date": "2026-10-21",
-  "origin_deployment": "20261021_163033",
+  "date": "2026-10-22",
+  "origin_deployment": "website_recovery_final_20261022_011645",
   "production_profile": "hybrid-gpt-preserve-25-pad-eager",
   "cfm_steps": 25,
   "seed": 42,
@@ -27,7 +27,9 @@
     "Machine-specific addresses and settings replaced by portable configuration and empty examples.",
     "Vendor source referenced by exact upstream Git submodules to preserve runtime commit checks.",
     "Added explicit environment preparation utility, documentation and source/privacy tests.",
-    "Model lock retains model identities; machine download telemetry omitted."
+    "Model lock retains model identities; machine download telemetry omitted.",
+    "Website recovery configuration, guarded HTTP endpoints and manual review are portable; runtime service settings and source registrations remain private.",
+    "Source revision receipt locations are omitted from public metrics while retained in local engineering records."
   ],
   "excluded": [
     "actual Proxy service/configuration/credentials/endpoints",
@@ -35,7 +37,7 @@
     "task state/receipts/reports except model identity lock",
     "model weights/cache/virtual environments/bundled binaries"
   ],
-  "validation_scope": "62 current source tests; source font builder exactly reproduces PNG; actual grouped render and full14m10.84s export below50MB with unchanged AAC packets/subtitles/EDL and full decode; two independent visual sample checks.",
+  "validation_scope": "196 source tests passed; 18s input website smoke completed two source rows, Proxy translation and review, native TTS, subtitles and 11.04s full-decode export below50MB; synthetic text recovery made two real Proxy calls and an identical repeat made zero new calls. Existing completed video and 30 original assets verified unchanged. Short probes do not certify all-source unattended success or human listening approval.",
   "files": [
     {
       "path": ".gitattributes",
@@ -59,8 +61,8 @@
     },
     {
       "path": "README.md",
-      "bytes": 5649,
-      "sha256": "d1835d616f99111aa1212444a26b70294394669bb51c91eccbd013095ffc5625"
+      "bytes": 6115,
+      "sha256": "09e00ba2a3c4e643aa4619e376f5757e7479ce3d9189b654a377fc2450a96299"
     },
     {
       "path": "THIRD_PARTY_NOTICES.md",
@@ -99,8 +101,8 @@
     },
     {
       "path": "config/local.example.json",
-      "bytes": 582,
-      "sha256": "a5c05fe7fd61242290c43224e092caf7ace2ae050895b92b3fcd1c4c8d3d677e"
+      "bytes": 604,
+      "sha256": "d9c0bb6d33226a5fe210a70fd8582f90538cc553c1d3434ce62db3a5f0a6e525"
     },
     {
       "path": "config/native_mlx_runtime.constraints.txt",
@@ -124,8 +126,8 @@
     },
     {
       "path": "docs/DEPLOYMENT.md",
-      "bytes": 2933,
-      "sha256": "cbe37125906f0e5aa1c656a17477778b85dc79f9d09760068710d044462f76ad"
+      "bytes": 3063,
+      "sha256": "78dea29da68a18a9c6d5e2481af9a305eee3055a56c8383c83e185ce402d75a1"
     },
     {
       "path": "docs/LOCAL_DATA.md",
@@ -136,6 +138,11 @@
       "path": "docs/LONG_SOURCE_MULTILINGUAL.md",
       "bytes": 2642,
       "sha256": "7cc1fe51361ce35cbd28fdd4dcccb51c9e635d6521610a2f4a47388a18ec763a"
+    },
+    {
+      "path": "docs/WEBSITE_RECOVERY.md",
+      "bytes": 5407,
+      "sha256": "77aeb0cc7b557bcb647cb2fc201ecb3cdd56038664fba91e0e2f4a85f1b06eef"
     },
     {
       "path": "reports/models.lock.json",
@@ -189,8 +196,8 @@
     },
     {
       "path": "scripts/compact_edit.py",
-      "bytes": 20573,
-      "sha256": "2087ae1f31dcf13aabb4d2ea71186158b4d82d15a4737436f68b9892ddb80e8c"
+      "bytes": 20764,
+      "sha256": "802735f66b5b7f2939dc05b19393740c72e0a1568d404cf15b1e987bd6bbd030"
     },
     {
       "path": "scripts/continuous_tts.py",
@@ -409,18 +416,38 @@
     },
     {
       "path": "tests/test_long_source_audit.py",
-      "bytes": 9941,
-      "sha256": "a54ae3042f7df19e6622439dbc37377dd093cf0f4eda56ee6b92280e6af732ef"
+      "bytes": 10515,
+      "sha256": "e008b267ad46b08e7a3c66165cbc1e9b47f4555f4e82a3ab432ba678b6d59d9d"
     },
     {
       "path": "tests/test_long_source_pipeline.py",
-      "bytes": 6092,
-      "sha256": "77d7004008c4864aea9832887b5745adb09ef65b637b1f752cdac6f51366f6d0"
+      "bytes": 6382,
+      "sha256": "4e36c8fcd342e4fa410ceaaecc72379fb0b2dab06c6c8ca05b5d13ef2de31fb8"
     },
     {
       "path": "tests/test_media_contract.py",
       "bytes": 2666,
       "sha256": "c5e9eb3dca059d543cea6ef4ecea442be3165f8c91a4481b92e47ac678fe4bec"
+    },
+    {
+      "path": "tests/test_media_recovery.py",
+      "bytes": 26415,
+      "sha256": "76d4fa84d11bac4364f5f3cb361dd0ef4b03f01067cd699d90e7cef43a322089"
+    },
+    {
+      "path": "tests/test_pipeline_website_recovery.py",
+      "bytes": 7334,
+      "sha256": "eab3e58f0c3085975e13e27794260c25e230eb9539867cd4a54fb2a755e8018b"
+    },
+    {
+      "path": "tests/test_preview_review_hints.py",
+      "bytes": 2856,
+      "sha256": "7c10e2ddf77f82a5a2571a3e06c9b43e3dbc99ff92691e8506fbcc013d9a151b"
+    },
+    {
+      "path": "tests/test_renderer_frame_clock.py",
+      "bytes": 5520,
+      "sha256": "c6869dadcbcaea794c597418d9b7f30816e943d9688be37596f9986e41bb083e"
     },
     {
       "path": "tests/test_source_language.py",
@@ -433,6 +460,31 @@
       "sha256": "af51b5d909f2612ad35e20dda5ff19505b8960708bf2cd92434b814a92eb8f21"
     },
     {
+      "path": "tests/test_translation_cache_binding.py",
+      "bytes": 11260,
+      "sha256": "c3a82e524ed5c1b8ed735b2a4db0913298587e397fcf03be9fc65bc2d47f9a21"
+    },
+    {
+      "path": "tests/test_translation_invariants.py",
+      "bytes": 1431,
+      "sha256": "1d061832485b034630c3190dce79123b637c3a21020cc136b16b987da861c7ae"
+    },
+    {
+      "path": "tests/test_website_recovery.py",
+      "bytes": 28294,
+      "sha256": "fe9e3df0fc63df87264b3e12b0a0cd3205d04bfde6c7e5f7c809059f05d61591"
+    },
+    {
+      "path": "tests/test_website_recovery_server.py",
+      "bytes": 24769,
+      "sha256": "a6ff44796e1c00acaa97ca2939c45f16c87862b7d121dcd9a4b6e0a0428a56b1"
+    },
+    {
+      "path": "tests/test_website_review.py",
+      "bytes": 29684,
+      "sha256": "4d5654d3a800ffe91cebce3f6863de1c9ad557a7d549360c2657a2cfe4146c87"
+    },
+    {
       "path": "web/early_voice_pilot.py",
       "bytes": 15861,
       "sha256": "ce3592d7eb6d52d4f4833f1a89dbd9cfa71c4fe84c7556519fecc795d44937bf"
@@ -443,19 +495,29 @@
       "sha256": "aa2560aa9988f92bf31e16d2cf236a42e765feaab86e5c80407171248f62604b"
     },
     {
+      "path": "web/failure_triage.py",
+      "bytes": 15040,
+      "sha256": "5ec300e498204286e6d2fb3180e6cf0ad21dddc5b68b72b65f6e863691674ccf"
+    },
+    {
       "path": "web/generic_group_alignment.py",
       "bytes": 26354,
       "sha256": "88ea717a1b6af9f2f80c026779f9c4172f038dd2f0e19582e9e33d14309cc120"
     },
     {
       "path": "web/generic_group_plan.py",
-      "bytes": 25139,
-      "sha256": "071aac401e2e4d81cbd4747ac64febeaa3f771d4a66ed6b86627dbce8652decb"
+      "bytes": 28974,
+      "sha256": "9222ec46b285ac966e7820d1028ec9eee0b6e27cb949121347584dc878f53a38"
     },
     {
       "path": "web/group_compact_adapter.py",
-      "bytes": 38350,
-      "sha256": "4e897acd70f3688ab22a932245d1a794e54d29e624b7bb41496291ec3efcfe1a"
+      "bytes": 44234,
+      "sha256": "8469cff7bae867720e0a79cc160494f67c3e4413491ed9f2c4fc824f29901289"
+    },
+    {
+      "path": "web/media_recovery.py",
+      "bytes": 35811,
+      "sha256": "8d28ab15d40139101775af16fd2fd320f5fdb2ad1f77688e49cf1f4cb3ad7fc5"
     },
     {
       "path": "web/natural_compact_adapter.py",
@@ -479,18 +541,18 @@
     },
     {
       "path": "web/pipeline.py",
-      "bytes": 90943,
-      "sha256": "aaf8670ae280da783914360725d4044519dc0ed45c93ac088db16bc14b65dfb6"
+      "bytes": 105644,
+      "sha256": "e2b3938f77f4c73bd587b547113b39528eeaf750a61c5e2a01fc06af7675df35"
     },
     {
       "path": "web/proxy_client.py",
-      "bytes": 45629,
-      "sha256": "b9c9c71b3376112a4e3370345d11097b62a639d35bd69dcaa459e5b9e5ba4bcb"
+      "bytes": 56208,
+      "sha256": "60ca46e148f9800359f6a626be005643fc1fc8c9c37f73f253ea76307ae86310"
     },
     {
       "path": "web/recovery.py",
-      "bytes": 24402,
-      "sha256": "0ed9320c28242fea1f0df39c182c83fab4cf2c51f74cd5225abd9d819e659ccb"
+      "bytes": 24463,
+      "sha256": "afd1a42b33ce4a240a762d33cfa6db26eb2c9aacd9ca0ac910432d90581a0d76"
     },
     {
       "path": "web/resolve_native_export.py",
@@ -504,8 +566,8 @@
     },
     {
       "path": "web/server.py",
-      "bytes": 41138,
-      "sha256": "eb3f3580d6ad3c7207f0e365c3fa35d8ff36fa71abfbb954531614303b3fced2"
+      "bytes": 56164,
+      "sha256": "ab6714b9778dbf825a1440fda26c0fd7a18983a51efbf2ddf5867d9cc677c846"
     },
     {
       "path": "web/service.py",
@@ -519,18 +581,18 @@
     },
     {
       "path": "web/static/app.js",
-      "bytes": 27980,
-      "sha256": "eeaf4f29b2d822557561facdbd6b139648864eaae564807c3e97f906a50d43e3"
+      "bytes": 42629,
+      "sha256": "567a81c1b972b39b95747d16a35b4ddb3c4242bca05a98b6431ee7e934509047"
     },
     {
       "path": "web/static/index.html",
-      "bytes": 9821,
-      "sha256": "6f1e4e706250f3ac341d30e93272819c5866dc2d06f41952bacfe332877adf27"
+      "bytes": 12820,
+      "sha256": "25a6335b23abfab8bc1b9c7f744859aab232c47d1eca6722f56782033ee4d6f4"
     },
     {
       "path": "web/static/style.css",
-      "bytes": 16807,
-      "sha256": "bde2029244e61da22c67bb7a540ea92a358918ac9423643938a99861674a226e"
+      "bytes": 18609,
+      "sha256": "e22c724eec19f4f2682c39deccda6b411a0b20446c03d9c9b7868fc6206187e3"
     },
     {
       "path": "web/subtitle_pages.py",
@@ -543,14 +605,23 @@
       "sha256": "25b7e287cb75b131adfa8b8b0e6eb768292e8c8f7b6316efb4b6bb848ec03369"
     },
     {
+      "path": "web/website_recovery.py",
+      "bytes": 36533,
+      "sha256": "cdbe44ee987d667ed9b1dee07e8c6b20980616a993ac65c5e1aef502878d5930"
+    },
+    {
+      "path": "web/website_review.py",
+      "bytes": 30949,
+      "sha256": "38650bc7ad3834f14665a0b73c0e1e5ea18803e64237a709cd22247a855335e9"
+    },
+    {
       "path": "启动局域网配音.command",
       "bytes": 194,
       "sha256": "7d78ba82c3b72a97fd0da84a89f95981777f91d496f7226d99fc14eade7efcdd"
     }
   ],
-  "release_revision": "Restore the original serif and light-box brand style",
+  "release_revision": "Website checkpoint recovery with bounded Proxy text editing and independent review, local media repair, and versioned manual corrections",
   "baseline_tag": "locked-2026-10-21",
-  "current_release_tag": "philos-club-serif-2026-10-21",
   "source_language_policy": "automatic_detection_and_proxy_two_pass",
   "episode_max_seconds": 1800,
   "watermark": {
@@ -570,5 +641,24 @@
       24
     ],
     "opacity": 0.55
+  },
+  "release_id": "website-recovery-2026-10-22",
+  "previous_release_tag": "philos-club-serif-2026-10-21",
+  "current_release_tag": null,
+  "website_recovery": {
+    "source_mode_default": "contextual",
+    "source_uncertainty_retained": true,
+    "text_max_actions": 6,
+    "text_max_rows_per_action": 8,
+    "text_max_per_input": 2,
+    "media_max_actions": 6,
+    "max_resume_rounds": 6,
+    "shared_run_budget_s": 14400,
+    "max_picture_hold_s": 4,
+    "default_reserve_gib": 8,
+    "failed_storage_job_reserve_gib": 2,
+    "runtime_free_gib_floor": 2,
+    "proxy_arbitrary_code_execution": false,
+    "manual_review_in_website": true
   }
 }

@@ -22,6 +22,7 @@ LEGACY_CACHE_NAMESPACE='proxy_translation_v1'
 CACHE_SCHEMA='proxy_translation_cache_v2'
 CONTINUITY_SCHEMA='proxy_adjacent_continuity_suggestion_v1'
 CONTINUITY_MAX_SOURCE_GAP_S=1.5
+INVARIANT_POLICY='typed_quantity_channel_words_v2'
 MODEL='gpt-6-luna'
 NUM=re.compile(r'(?<!\d)(?:minus\s*|零下\s*|负\s*|[-−])?(?:\d{1,3}(?:[. ,]\d{3})+(?:[.,]\d+)?|\d+(?:[.,]\d+)?)(?!\d)',re.I)
 # Unicode word boundaries also treat Chinese letters as word characters.
@@ -32,6 +33,7 @@ NEG_DE=re.compile(r'\b(?:kein\w*|nicht|nichts|niemals|niemand\w*|nie|ohne|weder)
 NEG_ZH=re.compile(r'不|无|没|未|非|否|免|拒|缺|禁止')
 CONDITION_DE=re.compile(r'\b(?:wenn|falls|sofern)\b',re.I)
 CONDITION_ZH=re.compile(r'如果|假如|倘若|若(?!干)|一旦|只要|除非|前提|条件|'
+                        r'[^。！？!?]{1,80}(?:时候|时)[，,]\s*(?:就|便|才)|'
                         r'只有[^。！？!?]{1,80}才|当[^。！？!?]{1,60}时|在[^。！？!?]{1,60}(?:时|情况下)|'
                         r'(?:^|[，。；！？：,;!?\s])待[^。！？!?]{1,60}(?:后|再|才)|一经[^。！？!?]{0,60}(?:确认|确定|批准|通过)|'
                         r'(?:确认|确定|获批|批准|证实|满足|完成|通过)[^。！？!?]{0,12}后|'
@@ -105,11 +107,11 @@ def _mask_german_cardinals(text):
 def _tv_channel_mentions(text,language):
     # Only these explicit German television names qualify. A general 台/ordinal
     # rule would incorrectly equate appliance counts or unrelated station names.
-    pattern=(r'(?<![\w])([12])\.\s*Deutsch(?:e|es|en)\s+Fernsehen\b'
+    pattern=(r'(?<![\w])(?:([12])\.|(erste|zweite)(?:n|m|r|s)?)\s*Deutsch(?:e|es|en)\s+Fernsehen\b'
              if language=='de' else r'德国(?:电视\s*([一二12])\s*台|第\s*([一二12])\s*电视台)')
     values=[]
     for match in re.finditer(pattern,text,re.I):
-        raw=next(group for group in match.groups() if group is not None);value={'一':1,'二':2}.get(raw)
+        raw=next(group for group in match.groups() if group is not None).lower();value={'一':1,'二':2,'erste':1,'zweite':2}.get(raw)
         if value is None:value=int(raw)
         start=max([text.rfind(mark,0,match.start()) for mark in '.!?。！？;；']+[-1])+1
         ends=[text.find(mark,match.end()) for mark in '.!?。！？;；']
@@ -149,6 +151,12 @@ def numeric_mentions(text,language):
     text,values=_tv_channel_mentions(text,language)
     text,months=_month_mentions(text,language);values.extend(months)
     if language=='de':text=_mask_german_cardinals(text)
+    else:
+        # Comparison only: explicit small counts, never arbitrary idioms/names.
+        # Keep Arabic-number prompts and the independent semantic audit intact.
+        small={'零':0,'一':1,'二':2,'两':2,'三':3,'四':4,'五':5,'六':6,'七':7,'八':8,'九':9,'十':10}
+        text=re.sub(r'(?<![零一二两三四五六七八九十百千万亿\d])([二两三四五六七八九十])(?=\s*(?:个|类|组|名|位|人|套|户|年|岁|小时|分钟|秒|公里|千米|公斤|千克|吨)(?![零一二两三四五六七八九十]))',
+                    lambda m:str(small[m.group(1)]),text)
     for m in NUM.finditer(text):
         raw=m.group();negative=bool(re.match(r'(minus|零下|负|[-−])',raw,re.I))
         raw=re.sub(r'^(?:minus\s*|零下\s*|负\s*|[-−])','',raw,flags=re.I).replace(' ','')
@@ -165,6 +173,17 @@ def numeric_mentions(text,language):
         dimension,factor=_unit(re.sub(r'^[-–](?=\D)','',tail),language)
         if language=='de' and dimension is None and 1900<=value<=2200 and re.search(r'(?:jahr\w*|bis|seit|ab|im)\s*$',text[:m.start()],re.I):
             dimension='years'
+        if language=='de' and dimension is None and 1900<=value<=2200:
+            context=text[max(0,m.start()-70):m.end()+90]
+            if (re.search(r'\b(?:erscheint|erschien)\b',context,re.I)
+                    and re.search(r'\b(?:Zeitschrift|Zeitung|EMMA|erste[nrs]?\s+Mal)\b',context,re.I)):
+                dimension='years'
+        if (language=='de' and dimension is None and -60<=value<=60
+                and re.search(r'\b(?:heute\s+nacht|temperaturen?)\b',text,re.I)
+                and re.search(r'\d+(?:[.,]\d+)?\s*(?:°\s*C?|Grad(?:\s+Celsius)?)',tail,re.I)):
+            # Weather lists share the final explicit Celsius unit across places.
+            # An already explicit currency/count/other unit can never use this.
+            dimension='temperature:C'
         # The first endpoint of a range can share its unit with the second.
         if dimension is None:
             shared=re.match(r'(?:bis|到|至|–|-)\s*(?:minus\s*|零下\s*|负\s*|[-−])?\d+(?:[.,]\d+)?\s*(.*)',tail,re.I)
@@ -231,6 +250,18 @@ def multilingual_invariants(source, target, source_language):
     return errors
 
 
+def _traffic_frequency(text,language):
+    # Explicit reciprocal ordinal, not a count of three accidents. Normalize
+    # the complete relationship before ordinary numeric comparison.
+    pattern=(r'\bin\s+jed(?:em|en|er)\s+(?:dritten|3\.)\s+Verkehrsunfall\b' if language=='de' else
+        r'每\s*(?:3|三)\s*起(?:交通)?事故(?:中|里)[，,\s]*(?:就)?(?:有)?\s*(?:1|一)\s*起|'
+        r'(?:三|3)分之(?:一|1)(?:的)?(?:交通)?事故')
+    found=[]
+    def mask(match):
+        found.append((1,3));return ' '*len(match.group())
+    return re.sub(pattern,mask,text,flags=re.I),found
+
+
 def invariants(source,target,previous_context=None,source_language='de'):
     source_language = normalize_language(source_language, allow_auto=False)
     if source_language != 'de':
@@ -240,7 +271,10 @@ def invariants(source,target,previous_context=None,source_language='de'):
     normalized=preprocess(source,target,previous_context=previous_context)
     errors=list(normalized['calendar_errors'])
     if normalized.get('review_required'):errors.append('数量语境尚未明确，需保留原文核对')
-    source,target=normalized['source'],normalized['target']
+    source,left_ratio=_traffic_frequency(normalized['source'],'de')
+    target,right_ratio=_traffic_frequency(normalized['target'],'zh')
+    if collections.Counter(left_ratio)!=collections.Counter(right_ratio):
+        errors.append('频率比例未完整保留：每3起交通事故中有1起；不能写成每3起均如此')
     left=numeric_mentions(source,'de');right=numeric_mentions(target,'zh')
     remaining=list(right)
     for mention in left:
@@ -254,7 +288,10 @@ def invariants(source,target,previous_context=None,source_language='de'):
     if collections.Counter(x[2] for x in clock_mentions(original_source,'de'))!=collections.Counter(x[2] for x in clock_mentions(original_target,'zh')):
         errors.append('时刻未完整保留')
     if NEG_DE.search(original_source) and not NEG_ZH.search(original_target):
-        errors.append('否定表达需复查')
+        attention=re.sub(r'\bnicht\s+aufgepasst\b','',original_source,flags=re.I)
+        attention_equivalent=(attention!=original_source and not NEG_DE.search(attention)
+            and re.search(r'走神|分神|分心|一时疏忽',original_target))
+        if not attention_equivalent:errors.append('否定表达需复查')
     if CONDITION_DE.search(original_source) and not CONDITION_ZH.search(original_target):
         errors.append('条件表达需复查')
     return errors
@@ -385,6 +422,13 @@ class ReviewRejectedError(RuntimeError):
             issues=rejection['issues'] or ['审校未批准，未提供具体原因']
             descriptions.append(str(rejection['id'])+'：'+'；'.join(issues[:3])[:240])
         super().__init__('译稿机器复核仍有未解决的问题：'+' | '.join(descriptions))
+
+
+class InvariantRejectedError(RuntimeError):
+    def __init__(self, failures):
+        self.failures=failures
+        super().__init__('译稿数字或条件检查尚未通过：'+' | '.join(
+            sid+'：'+'；'.join(issues) for sid,issues in failures.items() if issues))
 
 def write_diagnostic(directory,key,stage,model,data,response):
     """Persist text-only review evidence; never config, headers or credentials."""
@@ -531,7 +575,7 @@ def continuity_join_suggestions(rows,metadata):
     return groups
 
 
-def translate_segments(rows,root,progress=None,feedback=None,diagnostic_dir=None,source_language='de'):
+def translate_segments(rows,root,progress=None,feedback=None,diagnostic_dir=None,source_language='de',review_scope=None):
     source_language=normalize_language(source_language,allow_auto=False)
     if (not isinstance(rows,list) or any(not isinstance(row,dict) or
             not isinstance(row.get('segment_id'),str) or not row['segment_id'] or
@@ -548,11 +592,58 @@ def translate_segments(rows,root,progress=None,feedback=None,diagnostic_dir=None
         if 'text_de' in row and row['text_de']!=source:raise ValueError('原文兼容字段不一致，未继续翻译')
         normalized_rows.append({**row,'text_source':source,'text_de':source,'source_language':source_language})
     rows=normalized_rows
+    review_notes={};review_requirements={}
+    notes_path=Path(diagnostic_dir).parent/'source_review_hints.json' if diagnostic_dir is not None else None
+    if notes_path is not None and notes_path.is_file():
+        notes_record=json.loads(notes_path.read_text());by_id={row['segment_id']:row for row in rows}
+        scope=rows if review_scope is None else review_scope
+        if (not isinstance(scope,list) or not scope or len(scope)<len(rows)
+                or [{k:r.get(k) for k in ('segment_id','speaker_id','start_s','end_s','text_de')} for r in scope[:len(rows)]]
+                    !=[{k:r.get(k) for k in ('segment_id','speaker_id','start_s','end_s','text_de')} for r in rows]):
+            raise ValueError('预览复核范围不是已核验原计划的完整前缀')
+        scope_by_id={row['segment_id']:row for row in scope}
+        if len(scope_by_id)!=len(scope):raise ValueError('复核范围有重复原句')
+        if notes_record.get('schema')!='source_review_hints_v1':raise ValueError('源文复核提示格式不符')
+        for sid,note in notes_record.get('rows',{}).items():
+            if (sid not in scope_by_id or note.get('source_text_sha256')!=hashlib.sha256(scope_by_id[sid]['text_de'].encode()).hexdigest()
+                    or not isinstance(note.get('note'),str) or not 1<=len(note['note'])<=1000):
+                raise ValueError('源文复核提示与当前原文不符')
+            required=note.get('required_strings',[])
+            if (not isinstance(required,list) or len(required)>8
+                    or any(not isinstance(value,str) or not 1<=len(value)<=80 for value in required)):
+                raise ValueError('专名复核约束格式不符')
+            if sid in by_id:
+                review_notes[sid]=note['note'];review_requirements[sid]=required
     translate_prompt,audit_prompt=language_prompts(source_language)
     root=Path(root);client=ProxyClient(root);began=time.perf_counter()
     folder=root/'cache'/CACHE_NAMESPACE;folder.mkdir(parents=True,exist_ok=True)
-    batches=[list(enumerate(rows))[i:i+8] for i in range(0,len(rows),8)]
+    indexed=list(enumerate(rows))
+    line_numbers=[int(row['segment_id'][4:]) for row in rows if re.fullmatch(r'line\d{4,}',row['segment_id'])]
+    if len(line_numbers)==len(rows) and line_numbers==sorted(line_numbers) and all(n>0 for n in line_numbers):
+        grid={}
+        for item,number in zip(indexed,line_numbers):grid.setdefault((number-1)//8,[]).append(item)
+        batches=list(grid.values())
+    else:batches=[indexed[i:i+8] for i in range(0,len(rows),8)]
     complete=0;done_lock=threading.Lock();outputs={};suggestions={};origins={};hits=0;legacy_hits=0
+    diagnostic_reuse=[];batch_states={}
+    checkpoint_path=Path(diagnostic_dir).parent/'checkpoint.json' if diagnostic_dir is not None else None
+    if checkpoint_path is not None and checkpoint_path.is_file():
+        prior_bytes=checkpoint_path.read_bytes()
+        history=checkpoint_path.parent/'checkpoint_history';history.mkdir(parents=True,exist_ok=True)
+        (history/(str(time.time_ns())+'.json')).write_bytes(prior_bytes)
+    def checkpoint():
+        # Caller holds done_lock. Every published count describes fully checked
+        # batches; partial drafts are evidence, never completed translations.
+        if checkpoint_path is None:return
+        checkpoint_path.parent.mkdir(parents=True,exist_ok=True)
+        value={'schema':'translation_checkpoint_v1','input_rows_sha256':input_rows_sha256,
+               'model':client.model,'invariant_policy':INVARIANT_POLICY,
+               'completed':complete,'total':len(rows),'batch_size':8,'workers':2,
+               'request_timeout_seconds':240,'stage_budget_seconds':6600,
+               'repair_attempts_per_batch':1,'batches':batch_states,
+               'diagnostic_reuse':diagnostic_reuse,'human_reviewed':False}
+        temp=checkpoint_path.with_suffix('.pending')
+        temp.write_text(json.dumps(value,ensure_ascii=False,indent=2)+'\n');temp.replace(checkpoint_path)
     # Local-only typed quantity context. The existing cloud payload and its
     # valid batch caches remain unchanged; source text is never rewritten.
     numeric_contexts={}
@@ -566,7 +657,11 @@ def translate_segments(rows,root,progress=None,feedback=None,diagnostic_dir=None
             if not isinstance(a,(int,float)) or not isinstance(b,(int,float)) or not 0<=a-b<=1.5:break
             context.insert(0,previous['text_de']);following=previous
         numeric_contexts[row['segment_id']]=' '.join(context)
-    def work(batch):
+    def item_checks(item,target):
+        errors=invariants(item['text_de'],target,previous_context=numeric_contexts[item['id']],source_language=source_language)
+        errors.extend('缺少已确认专名：'+name for name in item.get('source_review_requirements',[]) if name not in target)
+        return errors
+    def batch_work(batch):
         nonlocal complete,hits,legacy_hits
         legacy_items=[{'id':r['segment_id'],'text_de':r['text_de'],
                 'target_characters':r.get('target_characters',max(8,int((r['end_s']-r['start_s'])*3.8))),
@@ -577,6 +672,12 @@ def translate_segments(rows,root,progress=None,feedback=None,diagnostic_dir=None
                 'previous_source_binding':source_binding(rows[i-1]) if i else None}
                for item,(i,row) in zip(legacy_items,batch)]
         items=[{**item,'text_source':item['text_de'],'source_language':source_language} for item in prior_items]
+        for item in items:
+            if item['id'] in review_notes:item['source_review_notes']=review_notes[item['id']]
+            if review_requirements.get(item['id']):item['source_review_requirements']=review_requirements[item['id']]
+        has_notes=any('source_review_notes' in item for item in items)
+        note_policy=('source_review_notes是根据原片复核记录的内容约束，请独立对照核验，修正已指出的误译；'
+                     '不得新增事实或删去数量关系。不能确认时approved=false并说明。') if has_notes else ''
         payload={'version':VERSION,'model':client.model,'source_language':source_language,
                  'source_language_policy':'whisper_multilingual_proxy_review_v1','items':items}
         key=hashlib.sha256(json.dumps(payload,sort_keys=True,ensure_ascii=False).encode()).hexdigest();path=folder/(key+'.json')
@@ -595,13 +696,13 @@ def translate_segments(rows,root,progress=None,feedback=None,diagnostic_dir=None
         prior_payload={'version':VERSION,'model':client.model,'items':prior_items}
         prior_key=hashlib.sha256(json.dumps(prior_payload,sort_keys=True,ensure_ascii=False).encode()).hexdigest()
         prior_path=folder/(prior_key+'.json')
-        prior_saved=json.loads(prior_path.read_text()) if source_language=='de' and not new_cache_valid and prior_path.is_file() else None
+        prior_saved=json.loads(prior_path.read_text()) if not has_notes and source_language=='de' and not new_cache_valid and prior_path.is_file() else None
         prior_cache_valid=(isinstance(prior_saved,dict) and prior_saved.get('schema')==CACHE_SCHEMA
             and prior_saved.get('input')==prior_payload
             and prior_saved.get('review_method')=='proxy_second_pass_and_numeric_checks'
             and prior_saved.get('human_reviewed') is False
             and prior_saved.get('continuity_review_source')=='same_second_pass_as_final_translation')
-        legacy_saved=json.loads(legacy_path.read_text()) if source_language=='de' and not new_cache_valid and not prior_cache_valid and legacy_path.is_file() else None
+        legacy_saved=json.loads(legacy_path.read_text()) if not has_notes and source_language=='de' and not new_cache_valid and not prior_cache_valid and legacy_path.is_file() else None
         if new_cache_valid:
             final=saved['translations']
             candidates=saved.get('continuity_candidates',{})
@@ -618,14 +719,36 @@ def translate_segments(rows,root,progress=None,feedback=None,diagnostic_dir=None
             with done_lock:hits+=1;legacy_hits+=1
         else:
             def call(stage,system,data):
+                if time.perf_counter()-began>6600:
+                    raise TimeoutError('译稿阶段达到时间预算；已保留逐批断点')
+                # Request identity must match exactly, including source bindings
+                # and draft text. Only an approved, currently valid audit/repair
+                # can stand in for that review call after a process restart.
+                if diagnostic_dir is not None:
+                    for prior in sorted(Path(diagnostic_dir).glob(key[:20]+'_'+stage+'_*.json'),reverse=True):
+                        if prior.stat().st_size>2*1024**2:continue
+                        try:
+                            record=json.loads(prior.read_text())
+                            if (record.get('schema')!='proxy_translation_diagnostic_v1'
+                                    or record.get('version')!=VERSION or record.get('model')!=client.model
+                                    or record.get('batch_key')!=key or record.get('stage')!=stage
+                                    or record.get('input')!=data or record.get('human_reviewed') is not False):continue
+                            response=record['response'];candidate=checked_map(response,ids,stage!='translate')
+                            if stage!='translate' and any(item_checks(x,candidate[x['id']]) for x in items):continue
+                        except (OSError,ValueError,KeyError,TypeError,RuntimeError):continue
+                        with done_lock:
+                            diagnostic_reuse.append({'batch_key':key,'stage':stage,'path':str(prior.resolve()),
+                                'sha256':hashlib.sha256(prior.read_bytes()).hexdigest()})
+                            checkpoint()
+                        return response
                 response=client.json(system,data)
                 write_diagnostic(diagnostic_dir,key,stage,client.model,data,response)
                 return response
-            draft_response=call('translate',translate_prompt,{'source_language':source_language,'items':items})
+            draft_response=call('translate',translate_prompt+note_policy,{'source_language':source_language,'items':items})
             initial=checked_map(draft_response,ids)
             draft_suggestions=continuity_candidates(draft_response,ids)
             audit_items=[{**x,'draft_zh':initial[x['id']],'draft_continuity':draft_suggestions.get(x['id'],{})} for x in items]
-            audit_response=call('audit',audit_prompt,{'source_language':source_language,'items':audit_items})
+            audit_response=call('audit',audit_prompt+note_policy,{'source_language':source_language,'items':audit_items})
             review_issues={}
             try:
                 final=checked_map(audit_response,ids,True)
@@ -636,32 +759,56 @@ def translate_segments(rows,root,progress=None,feedback=None,diagnostic_dir=None
                 review_issues={entry['id']:entry['issues'] or ['审校未批准，需重新核对']
                                for entry in rejection.rejections}
             candidates=continuity_candidates(audit_response,ids)
-            bad={x['id']:invariants(x['text_de'],final[x['id']],previous_context=numeric_contexts[x['id']],source_language=source_language) for x in items}
+            bad={x['id']:item_checks(x,final[x['id']]) for x in items}
             bad={k:v for k,v in bad.items() if v}
             if review_issues or bad:
                 repair=[{**x,'draft_zh':final[x['id']],
                          'draft_continuity':candidates.get(x['id'],{}),
                          'checks':bad.get(x['id'],[]),
                          'review_issues':review_issues.get(x['id'],[])} for x in items]
-                repair_response=call('repair',audit_prompt,{'source_language':source_language,'items':repair})
+                repair_response=call('repair',audit_prompt+note_policy,{'source_language':source_language,'items':repair})
                 # No loop: another rejection or invariant failure ends this
                 # batch without a cache entry, with both diagnostics retained.
                 final=checked_map(repair_response,ids,True)
                 candidates=continuity_candidates(repair_response,ids)
-                bad={x['id']:invariants(x['text_de'],final[x['id']],previous_context=numeric_contexts[x['id']],source_language=source_language) for x in items}
-                if any(bad.values()):raise RuntimeError('译稿数字或条件检查尚未通过，任务已保留供校对')
+                bad={x['id']:item_checks(x,final[x['id']]) for x in items}
+                if any(bad.values()):raise InvariantRejectedError(bad)
             value={'schema':CACHE_SCHEMA,'input':payload,'translations':final,'continuity_candidates':candidates,
                    'continuity_review_source':'same_second_pass_as_final_translation',
                    'review_method':'proxy_second_pass_and_numeric_checks','human_reviewed':False}
             temp=path.with_suffix('.pending');temp.write_text(json.dumps(value,ensure_ascii=False,indent=2)+'\n');temp.replace(path)
         if (not isinstance(final,dict) or set(final)!=ids
                 or any(not isinstance(final[x['id']],str) or not final[x['id']].strip()
-                       or invariants(x['text_de'],final[x['id']],previous_context=numeric_contexts[x['id']],source_language=source_language) for x in items)):raise RuntimeError('缓存译稿校验失败')
+                       or item_checks(x,final[x['id']]) for x in items)):raise RuntimeError('缓存译稿校验失败')
         with done_lock:
             outputs.update(final);suggestions.update(candidates);origins.update({sid:origin for sid in ids});complete+=len(items)
+            batch_states[items[0]['id']]={'status':'verified','ids':sorted(ids),'cache_key':key,
+                'cache_file_sha256':hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None}
+            checkpoint()
             if progress:progress(complete,len(rows))
+    def work(batch):
+        try:return batch_work(batch)
+        except Exception as error:
+            with done_lock:
+                batch_states[batch[0][1]['segment_id']]={'status':'failed',
+                    'ids':[row['segment_id'] for _,row in batch],
+                    'error_type':type(error).__name__,
+                    'checks':getattr(error,'failures',{}),'review_rejections':getattr(error,'rejections',[])}
+                checkpoint()
+            raise
+    # A rejected batch must not discard the other completed responses or cancel
+    # still-pending independent work. Join every bounded worker before raising.
+    failures=[]
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-        list(pool.map(work,batches))
+        futures={pool.submit(work,batch):index for index,batch in enumerate(batches)}
+        for future in concurrent.futures.as_completed(futures):
+            try:future.result()
+            except Exception as error:failures.append((futures[future],error))
+    if failures:
+        failures.sort(key=lambda entry:entry[0])
+        # Content failures remain hard stops even if a sibling saw a timeout.
+        hard=[error for _,error in failures if not isinstance(error,ProxyTransportError)]
+        raise (hard or [error for _,error in failures])[0]
     continuity=continuity_metadata(rows,outputs,suggestions,origins)
     updated=[{**row,'text_zh':outputs[row['segment_id']],'translation_model':client.model,
               'translation_reviewed':True,'human_reviewed':False,
@@ -676,6 +823,8 @@ def translate_segments(rows,root,progress=None,feedback=None,diagnostic_dir=None
                     'wall_seconds':time.perf_counter()-began,'requests':client.records,
                     'cache_batches':hits,'human_reviewed':False,'review_method':'two_pass_machine_review_and_numeric_invariants',
                     'translation_version':VERSION,'cache_namespace':CACHE_NAMESPACE,
+                    'invariant_policy':INVARIANT_POLICY,'reused_diagnostic_requests':diagnostic_reuse,
+                    'source_review_note_rows':sorted(review_notes),
                     'source_language':source_language,'source_language_label':language_label(source_language),
                     'numeric_check_coverage':'german_typed_quantities_calendar_negation_conditions' if source_language=='de' else
                         'explicit_symbolic_quantities_and_HHMM_only_with_mandatory_proxy_semantic_audit',
