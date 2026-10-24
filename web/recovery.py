@@ -1,8 +1,8 @@
-"""Bounded, data-only Proxy recovery advice; this module never executes a stage.
+"""Bounded local recovery decisions and compatible data-only Proxy advice.
 
-Only trusted runner/Proxy metadata can open a retry action. The model cannot
-change that policy, and a reservation is journaled before contacting it. A user
-clicking retry does not clear this lifetime per-job budget.
+Only trusted runner/Proxy metadata can open a retry action. A reservation is
+journaled before deciding; neither path executes a stage or resets the lifetime
+per-job budget. Verified transport failures need no model call.
 """
 from contextlib import contextmanager
 import errno
@@ -73,6 +73,11 @@ def _error_class(error):
     return 'PipelineError'
 
 
+def _policy_fingerprint(policy):
+    identity = {key: policy[key] for key in ('stage', 'error_class', 'policy_code', 'evidence')}
+    return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+
+
 def classify_error(stage, error, failure_metadata=None):
     """Classify trusted machine metadata. Missing/unknown evidence is a stop.
 
@@ -134,8 +139,7 @@ def classify_error(stage, error, failure_metadata=None):
               'policy_code': code, 'retryable_reasons': [reason] if reason else [],
               'evidence': detail,
               'allowed_actions': ['retry_same_stage', 'stop_for_review'] if retryable else ['stop_for_review']}
-    identity = {key: result[key] for key in ('stage', 'error_class', 'policy_code', 'evidence')}
-    result['fingerprint'] = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+    result['fingerprint'] = _policy_fingerprint(result)
     return result
 
 
@@ -226,8 +230,19 @@ class RecoveryController:
         for index, attempt in enumerate(value['attempts'], 1):
             if (not isinstance(attempt, dict) or attempt.get('attempt_id') != index
                 or not isinstance(attempt.get('fingerprint'), str)
-                or not _SHA.fullmatch(attempt['fingerprint'])):
+                or not _SHA.fullmatch(attempt['fingerprint'])
+                or attempt.get('state') not in {'advising', 'deciding', 'decided'}
+                or not isinstance(attempt.get('before'), dict)):
                 raise ValueError('Invalid recovery journal attempt')
+            before = attempt['before']
+            try:
+                bound = before.get('fingerprint') == attempt['fingerprint'] == _policy_fingerprint(before)
+            except (KeyError, TypeError, ValueError):
+                bound = False
+            if not bound:
+                raise ValueError('Recovery journal failure policy changed')
+        if len({item['fingerprint'] for item in value['attempts']}) != value['attempts_consumed']:
+            raise ValueError('Duplicate recovery journal failure')
         return value
 
     def _save(self, value):
@@ -254,6 +269,45 @@ class RecoveryController:
                 'policy_code': code, 'attempts_consumed': count,
                 'attempt_id': attempt_id, 'will_execute': False}
 
+    def deterministic_decision(self, stage, error, failure_metadata=None):
+        """Reserve and authorize only a locally verified transient retry.
+
+        This performs no model/cache callback and never executes the retry.
+        Both journal writes stay under the process/thread lock: interruption
+        after reservation spends the attempt without leaving reusable approval.
+        """
+        policy = classify_error(stage, error, failure_metadata)
+        if not policy['retryable']:
+            return self._stop(policy['policy_code'])
+        attempt_id = None
+        try:
+            with self._locked():
+                journal = self._read()
+                count = journal['attempts_consumed']
+                if any(item['fingerprint'] == policy['fingerprint'] for item in journal['attempts']):
+                    return self._stop('same_failure_already_attempted', count)
+                if count >= MAX_ATTEMPTS:
+                    return self._stop('job_recovery_budget_exhausted', count)
+                if any(item.get('outcome') is None for item in journal['attempts']):
+                    return self._stop('recovery_decision_in_flight', count)
+                attempt_id = count + 1
+                attempt = {'attempt_id': attempt_id, 'fingerprint': policy['fingerprint'],
+                    'before': policy, 'verified_cache': None, 'requested_at': _now(),
+                    'mode': 'deterministic_transport_policy_v1', 'state': 'deciding',
+                    'decision': None, 'outcome': None}
+                journal['attempts_consumed'] = attempt_id
+                journal['attempts'].append(attempt)
+                self._save(journal)
+                decision = {'action': 'retry_same_stage', 'reason_code': 'transient_verified',
+                    'policy_code': policy['policy_code'], 'attempts_consumed': attempt_id,
+                    'attempt_id': attempt_id, 'will_execute': False}
+                attempt.update(state='decided', decision=decision, decided_at=_now())
+                self._save(journal)
+                return decision
+        except (OSError, ValueError, TypeError):
+            return self._stop('journal_decision_not_persisted' if attempt_id is not None
+                              else 'journal_unavailable_or_invalid', attempt_id or 0, attempt_id)
+
     def advice(self, stage, error, failure_metadata=None, cache_verifier=None):
         policy = classify_error(stage, error, failure_metadata)
         # Hard denials never contact AI, consume no new retry budget, and cannot
@@ -271,7 +325,7 @@ class RecoveryController:
                     return self._stop('same_failure_already_attempted', count)
                 if count >= MAX_ATTEMPTS:
                     return self._stop('job_recovery_budget_exhausted', count)
-                if any(item.get('state') == 'advising' for item in journal['attempts']):
+                if any(item.get('outcome') is None for item in journal['attempts']):
                     return self._stop('recovery_advice_in_flight', count)
                 attempt_id = count + 1
                 journal['attempts_consumed'] = attempt_id
@@ -345,8 +399,16 @@ class RecoveryController:
                     or candidate['attempts_consumed'] != number):
                     return False
                 attempt = journal['attempts'][number - 1]
+                expected_policy = dict(policy)
+                if attempt.get('verified_cache') is not None:
+                    # Compatible advice may offer verified cache reuse, but
+                    # every other current policy field must still match.
+                    expected_policy['allowed_actions'] = ['retry_same_stage', 'reuse_verified_outputs', 'stop_for_review']
                 return (attempt.get('state') == 'decided' and attempt.get('outcome') is None
                         and attempt['fingerprint'] == policy['fingerprint']
+                        and attempt.get('before') == expected_policy
+                        and (attempt.get('mode') != 'deterministic_transport_policy_v1'
+                             or attempt.get('verified_cache') is None)
                         and attempt.get('decision') == candidate)
         except (OSError, ValueError, TypeError, IndexError):
             return False
@@ -362,12 +424,13 @@ class RecoveryController:
             attempt = journal['attempts'][attempt_id - 1]
             if attempt.get('outcome') is not None:
                 raise ValueError('Recovery outcome already recorded')
-            if attempt['state']=='advising' and outcome in {'cancelled','stopped'}:
+            if attempt['state'] in {'advising','deciding'} and outcome in {'cancelled','stopped'}:
                 # The supervised advisor has been killed or timed out. Keep
                 # its reservation spent, and prevent an unfinished request
                 # from permanently latching every different future failure.
+                code = 'decision_interrupted' if attempt['state'] == 'deciding' else 'advice_interrupted'
                 attempt.update(state='decided',decision=self._stop(
-                    'advice_interrupted',journal['attempts_consumed'],attempt_id),decided_at=_now())
+                    code,journal['attempts_consumed'],attempt_id),decided_at=_now())
             elif attempt['state']!='decided':
                 raise ValueError('Recovery advice incomplete')
             attempt.update(outcome=outcome, outcome_at=_now())
@@ -398,11 +461,12 @@ def _save_cli_output(path, value):
 
 def main(argv=None):
     import argparse
-    parser = argparse.ArgumentParser(description='Data-only bounded Proxy recovery advice')
+    parser = argparse.ArgumentParser(description='Bounded local recovery decisions and compatible Proxy advice')
     commands = parser.add_subparsers(dest='operation', required=True)
-    advise = commands.add_parser('advise')
-    advise.add_argument('--root', required=True); advise.add_argument('--job', required=True)
-    advise.add_argument('--packet', required=True); advise.add_argument('--out', required=True)
+    for operation in ('advise', 'decide'):
+        command = commands.add_parser(operation)
+        command.add_argument('--root', required=True); command.add_argument('--job', required=True)
+        command.add_argument('--packet', required=True); command.add_argument('--out', required=True)
     outcome = commands.add_parser('outcome')
     outcome.add_argument('--root', required=True); outcome.add_argument('--job', required=True)
     outcome.add_argument('--attempt', type=int, required=True)
@@ -432,7 +496,8 @@ def main(argv=None):
         if not isinstance(packet.get('error_class'), str) or packet['error_class'] not in error_types:
             raise ValueError('Invalid recovery error class')
         error = error_types[packet['error_class']]('Stage failed; private details retained locally')
-        decision = controller.advice(packet['stage'], error, packet['failure_metadata'])
+        decide = controller.deterministic_decision if args.operation == 'decide' else controller.advice
+        decision = decide(packet['stage'], error, packet['failure_metadata'])
         decision['local_policy_allowed'] = decision['action'] in {'retry_same_stage', 'reuse_verified_outputs'}
         _save_cli_output(output_path, decision)
         print(json.dumps({'event': 'recovery_decision', 'action': decision['action'],

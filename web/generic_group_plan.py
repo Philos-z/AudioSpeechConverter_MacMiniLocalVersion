@@ -2,7 +2,8 @@
 
 Only an explicit approved machine suggestion may join adjacent source rows.
 Invalid/conflicting advice falls back to singleton rows, never missing speech.
-Long individual source sentences remain intact and block automatic synthesis.
+Individual complete source sentences may remain intact up to 24 seconds with
+explicit completeness evidence; longer or uncertain rows block synthesis.
 """
 import argparse
 import copy
@@ -15,6 +16,7 @@ import re
 SCHEMA = 'pretts_semantic_group_plan_v1'
 VERSION = 'generic_pretts_semantic_groups_v1'
 POLICY = {'max_source_span_s': 15., 'max_source_gap_s': 1.5,
+          'max_single_complete_source_span_s': 24.,
           'max_normalized_characters': 80, 'cross_speaker_grouping': False,
           'automatic_topic_merging': False, 'cross_quote_speaker_grouping': False,
           'proportional_subtitle_fallback': False}
@@ -329,7 +331,31 @@ def build_plan(root, job, suggestions_path=None, profile=DEFAULT_PROFILE, profil
             'translation_reviewed': True, 'speaker_reviewed': True, 'human_reviewed': False,
             'translation_review_method': 'unchanged reviewed rows; explicit semantic joins only'}
         issues = []
-        if span > POLICY['max_source_span_s']:issues.append('single_source_row_exceeds_15s')
+        if span > POLICY['max_source_span_s']:
+            complete_single = (len(members) == 1
+                and span <= POLICY['max_single_complete_source_span_s']
+                and offset <= POLICY['max_normalized_characters']
+                and not tts_row['overlap']
+                and members[0].get('source_sentence_complete') is True
+                and members[0].get('german_sentence_complete') is True)
+            if complete_single:
+                original = members[0]
+                evidence['single_complete_source_row_exception'] = {
+                    'schema': 'bounded_complete_source_sentence_v1',
+                    'segment_id': original['segment_id'],
+                    'source_ids': copy.deepcopy(original['source_ids']),
+                    'source_row_sha256': fingerprint(original),
+                    'source_start_s': original['start_s'], 'source_end_s': original['end_s'],
+                    'source_span_s': span, 'normalized_characters': offset,
+                    'source_sentence_complete': True, 'german_sentence_complete': True,
+                    'overlap': False,
+                    'max_source_span_s': POLICY['max_single_complete_source_span_s'],
+                    'max_normalized_characters': POLICY['max_normalized_characters'],
+                    'source_row_text_and_ids_unchanged': True,
+                    'source_row_split_or_joined': False,
+                    'reason': 'Preserve one complete original sentence within the bounded singleton limit'}
+            else:
+                issues.append('single_source_row_exceeds_15s')
         if offset > POLICY['max_normalized_characters']:issues.append('single_source_row_exceeds_80_normalized_characters')
         if tts_row['overlap']:issues.append('overlapping_source_row_requires_review')
         if issues:policy_issues.append({'group_id': group_id, 'member_ids': member_ids, 'issues': issues})

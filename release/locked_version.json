@@ -1,7 +1,7 @@
 {
   "schema": "source_only_locked_release_v1",
-  "date": "2026-10-22",
-  "origin_deployment": "website_recovery_final_20261022_011645",
+  "date": "2026-10-24",
+  "origin_deployment": "source_sync_fixed_controller_20261024",
   "production_profile": "hybrid-gpt-preserve-25-pad-eager",
   "cfm_steps": 25,
   "seed": 42,
@@ -29,7 +29,9 @@
     "Added explicit environment preparation utility, documentation and source/privacy tests.",
     "Model lock retains model identities; machine download telemetry omitted.",
     "Website recovery configuration, guarded HTTP endpoints and manual review are portable; runtime service settings and source registrations remain private.",
-    "Source revision receipt locations are omitted from public metrics while retained in local engineering records."
+    "Source revision receipt locations are omitted from public metrics while retained in local engineering records.",
+    "Synchronized fixed recovery, subtitle preflight, acoustic regeneration, encoded mastering, resumable storage and delivery archive source; kept all earlier portable/private source-scope adaptations.",
+    "Release regression fixtures use synthetic data; runtime tasks, actual configurations and engineering evidence stay local."
   ],
   "excluded": [
     "actual Proxy service/configuration/credentials/endpoints",
@@ -37,7 +39,7 @@
     "task state/receipts/reports except model identity lock",
     "model weights/cache/virtual environments/bundled binaries"
   ],
-  "validation_scope": "196 source tests passed; 18s input website smoke completed two source rows, Proxy translation and review, native TTS, subtitles and 11.04s full-decode export below50MB; synthetic text recovery made two real Proxy calls and an identical repeat made zero new calls. Existing completed video and 30 original assets verified unchanged. Short probes do not certify all-source unattended success or human listening approval.",
+  "validation_scope": "435 source tests passed in the prepared macOS media environment, including temporary local HTTP, real short media encode/remux checks, subtitle layout geometry, source/privacy guards, bounded recovery and archival identity. Production recovery and final encoded audio were checked locally; task-specific media, text, identities and reports remain excluded. Source synchronization does not certify a fresh machine, all-source unattended operation or human listening approval.",
   "files": [
     {
       "path": ".gitattributes",
@@ -61,8 +63,8 @@
     },
     {
       "path": "README.md",
-      "bytes": 6115,
-      "sha256": "09e00ba2a3c4e643aa4619e376f5757e7479ce3d9189b654a377fc2450a96299"
+      "bytes": 6841,
+      "sha256": "e965ae799b4e5ffb37969ad4510afab3aa02e74bcbbae3156ce3495caa164411"
     },
     {
       "path": "THIRD_PARTY_NOTICES.md",
@@ -141,8 +143,8 @@
     },
     {
       "path": "docs/WEBSITE_RECOVERY.md",
-      "bytes": 5407,
-      "sha256": "77aeb0cc7b557bcb647cb2fc201ecb3cdd56038664fba91e0e2f4a85f1b06eef"
+      "bytes": 6401,
+      "sha256": "74f71f713a0851729dcc048d6886532c70d54128f5daa7fefc7bac64312b58e5"
     },
     {
       "path": "reports/models.lock.json",
@@ -196,8 +198,8 @@
     },
     {
       "path": "scripts/compact_edit.py",
-      "bytes": 20764,
-      "sha256": "802735f66b5b7f2939dc05b19393740c72e0a1568d404cf15b1e987bd6bbd030"
+      "bytes": 23186,
+      "sha256": "67b8ee7b480f557261713b64f4ab217c9b05d59caed2185fc9621a81af436ede"
     },
     {
       "path": "scripts/continuous_tts.py",
@@ -400,9 +402,44 @@
       "sha256": "35e599aabc4ab2c8a245a4c33354508507bb5ee053b9201e420782bcf6312404"
     },
     {
+      "path": "tests/test_acoustic_fallback.py",
+      "bytes": 21122,
+      "sha256": "3d4784a2211c111c713083ebc7af13c89d015a5ddf16a0ed36fdbdb4daeae6cb"
+    },
+    {
+      "path": "tests/test_alignment_resume.py",
+      "bytes": 9681,
+      "sha256": "91a220a940a756e54f81e90468c44d77253b99cb6447c2e3eb5a0fbd94b28938"
+    },
+    {
+      "path": "tests/test_automatic_translation_retry.py",
+      "bytes": 4172,
+      "sha256": "7edfede41c416552238d26f9de405d5fa32ff97a379511fe82dbe810e5e21973"
+    },
+    {
       "path": "tests/test_bootstrap_source.py",
       "bytes": 5281,
       "sha256": "7bc53663d3dd5939dcdbc5132c89b4214966e49f8a0c40422ad45e52ba72ffee"
+    },
+    {
+      "path": "tests/test_delivery_archive.py",
+      "bytes": 7365,
+      "sha256": "ed41d1244dec8443ccd4b52f21d227cf33dbc281c758b480b8e3229f283f8df6"
+    },
+    {
+      "path": "tests/test_deterministic_recovery.py",
+      "bytes": 15627,
+      "sha256": "07418538beae65850b31727df6d55ea8aa01a4df35680a6ec68a602a563a3f8c"
+    },
+    {
+      "path": "tests/test_encoded_master_pipeline.py",
+      "bytes": 4818,
+      "sha256": "ebb56e228f4d47fc8e8ca9d8a6bb6f11cf5f7331fc42235a0904428e9b3a2dca"
+    },
+    {
+      "path": "tests/test_encoded_master_recovery.py",
+      "bytes": 11734,
+      "sha256": "9ac4ae2e20a61319323ea9562691a7c4ade428915c2c1a23347bcdaf264672d9"
     },
     {
       "path": "tests/test_episode_planner.py",
@@ -413,6 +450,16 @@
       "path": "tests/test_export_size.py",
       "bytes": 11881,
       "sha256": "05f178db6c2ad1fbd65a57155d33d698d2f5bf68f563e008615ace3d439e75ee"
+    },
+    {
+      "path": "tests/test_failure_triage_local_translation.py",
+      "bytes": 9175,
+      "sha256": "3b70071c574fe4f7fab5460e563777e58c1114334c56000f514c50589b91d116"
+    },
+    {
+      "path": "tests/test_long_complete_sentence.py",
+      "bytes": 8280,
+      "sha256": "112dd75807832d63e71f26043473327227eb1aed3cf84bf128796b42d4d44b1a"
     },
     {
       "path": "tests/test_long_source_audit.py",
@@ -445,9 +492,29 @@
       "sha256": "7c10e2ddf77f82a5a2571a3e06c9b43e3dbc99ff92691e8506fbcc013d9a151b"
     },
     {
+      "path": "tests/test_recovery_budget_routing.py",
+      "bytes": 18962,
+      "sha256": "ab6804e9ebb51be1ff90221bd5d93a04bb74e8f1e98222bbf6fa4c2d184056b0"
+    },
+    {
       "path": "tests/test_renderer_frame_clock.py",
       "bytes": 5520,
       "sha256": "c6869dadcbcaea794c597418d9b7f30816e943d9688be37596f9986e41bb083e"
+    },
+    {
+      "path": "tests/test_resume_space_pipeline.py",
+      "bytes": 8109,
+      "sha256": "d273483db664bfb96190cb970f942e7eb32de78bf749a848a501915e6796c10d"
+    },
+    {
+      "path": "tests/test_resume_storage.py",
+      "bytes": 10020,
+      "sha256": "6a279336e39ba928c3d897511a4633ffdaf52ac60dba36813069f7f6e4d4fee1"
+    },
+    {
+      "path": "tests/test_source_audio_boundaries.py",
+      "bytes": 2902,
+      "sha256": "4deb3f1a9aba4c754cb3d4c82b4a51b0b9669aafb7affaa56eb4a2848e5364aa"
     },
     {
       "path": "tests/test_source_language.py",
@@ -455,19 +522,49 @@
       "sha256": "69b1cefe178d6dd7dacc730be98622a765a0790b628ac78a4040436e113d81b1"
     },
     {
+      "path": "tests/test_source_lexical_hints.py",
+      "bytes": 1096,
+      "sha256": "b2e52aed98a42cd4eb51ef9b26068402c4d57c8a62c14bc164a19b043d1e8629"
+    },
+    {
       "path": "tests/test_source_scope_privacy.py",
       "bytes": 9244,
       "sha256": "af51b5d909f2612ad35e20dda5ff19505b8960708bf2cd92434b814a92eb8f21"
     },
     {
+      "path": "tests/test_subtitle_layout_fit.py",
+      "bytes": 6946,
+      "sha256": "778a9c2eda3cb556cfcbc0e97e5ab7bea093c039ce0ac4005b5466f212d039aa"
+    },
+    {
       "path": "tests/test_translation_cache_binding.py",
-      "bytes": 11260,
-      "sha256": "c3a82e524ed5c1b8ed735b2a4db0913298587e397fcf03be9fc65bc2d47f9a21"
+      "bytes": 11411,
+      "sha256": "07510f94e6b139e8af7fb435266333bb787b04061097b266f8deac3c9f3c5c08"
     },
     {
       "path": "tests/test_translation_invariants.py",
       "bytes": 1431,
       "sha256": "1d061832485b034630c3190dce79123b637c3a21020cc136b16b987da861c7ae"
+    },
+    {
+      "path": "tests/test_translation_numeric_forms.py",
+      "bytes": 12076,
+      "sha256": "cc13d71b91d7b44a26d7eb079ad0beb2864183917a907e5318cdabce4657e76e"
+    },
+    {
+      "path": "tests/test_translation_recovery.py",
+      "bytes": 47754,
+      "sha256": "6aab0d7c08236fec5ca1146c886cc805daf38500c0f182e521b330bb1d32915c"
+    },
+    {
+      "path": "tests/test_translation_reuse.py",
+      "bytes": 10234,
+      "sha256": "1a82cdf209503c9ae799617f0bee62d020fe316bee15d4bea986816440ef5c97"
+    },
+    {
+      "path": "tests/test_translation_tolerance.py",
+      "bytes": 6858,
+      "sha256": "d6c88d573e4201e533b4970bfa86727f511ee55ddf3acaa9a3f232a2a07e8c19"
     },
     {
       "path": "tests/test_website_recovery.py",
@@ -485,9 +582,24 @@
       "sha256": "4d5654d3a800ffe91cebce3f6863de1c9ad557a7d549360c2657a2cfe4146c87"
     },
     {
+      "path": "web/acoustic_fallback.py",
+      "bytes": 18964,
+      "sha256": "0b0c652d0216b04975e52679f84512df45b42aef4e0ba79e4301e6b581308033"
+    },
+    {
+      "path": "web/delivery_archive.py",
+      "bytes": 7102,
+      "sha256": "2a17b8e134705d6f7af5ca2666bade18a17bcdb91a1b5bb43185eb67b001d175"
+    },
+    {
       "path": "web/early_voice_pilot.py",
       "bytes": 15861,
       "sha256": "ce3592d7eb6d52d4f4833f1a89dbd9cfa71c4fe84c7556519fecc795d44937bf"
+    },
+    {
+      "path": "web/encoded_master_recovery.py",
+      "bytes": 23999,
+      "sha256": "f36bdf92664bbae84b8271998f937504240fe33670e26bcfb574c40b9bad3136"
     },
     {
       "path": "web/episode_planner.py",
@@ -496,8 +608,8 @@
     },
     {
       "path": "web/failure_triage.py",
-      "bytes": 15040,
-      "sha256": "5ec300e498204286e6d2fb3180e6cf0ad21dddc5b68b72b65f6e863691674ccf"
+      "bytes": 21606,
+      "sha256": "7bbcfd515d8102d73a6258a347beb873a60a0e508d446e4c2fe064475cdc1a3a"
     },
     {
       "path": "web/generic_group_alignment.py",
@@ -506,8 +618,8 @@
     },
     {
       "path": "web/generic_group_plan.py",
-      "bytes": 28974,
-      "sha256": "9222ec46b285ac966e7820d1028ec9eee0b6e27cb949121347584dc878f53a38"
+      "bytes": 30606,
+      "sha256": "41a3d96d38874342976a50ee46ff6c28a34d413dde6d5d99361cb6f717d76a73"
     },
     {
       "path": "web/group_compact_adapter.py",
@@ -516,8 +628,8 @@
     },
     {
       "path": "web/media_recovery.py",
-      "bytes": 35811,
-      "sha256": "8d28ab15d40139101775af16fd2fd320f5fdb2ad1f77688e49cf1f4cb3ad7fc5"
+      "bytes": 36987,
+      "sha256": "e2e72ded465ebd3d17d31fedad0b6ead80e74702cb95a66a486bdb78f72dbc55"
     },
     {
       "path": "web/natural_compact_adapter.py",
@@ -526,8 +638,8 @@
     },
     {
       "path": "web/numeric_calendar_context.py",
-      "bytes": 7924,
-      "sha256": "cacbf65b1a50d6e2358fb600cb149ccdfe3f85178098639dc015eb1b974d0ad7"
+      "bytes": 8379,
+      "sha256": "63adc647190929c69058c1d2bb365d22972ea0a77662df3d6a25b4dd93b8f17f"
     },
     {
       "path": "web/optional_constant_master.py",
@@ -541,23 +653,28 @@
     },
     {
       "path": "web/pipeline.py",
-      "bytes": 105644,
-      "sha256": "e2b3938f77f4c73bd587b547113b39528eeaf750a61c5e2a01fc06af7675df35"
+      "bytes": 121841,
+      "sha256": "a06f8d34ba5cbbe0a3e826180463b12bbf4b0d186086ddde4a66670eb2d9cde1"
     },
     {
       "path": "web/proxy_client.py",
-      "bytes": 56208,
-      "sha256": "60ca46e148f9800359f6a626be005643fc1fc8c9c37f73f253ea76307ae86310"
+      "bytes": 68100,
+      "sha256": "cc28d5b0b7c5d9c0eee2bbd2edf4c2186c7a189992f8cfa896d0903e762bec09"
     },
     {
       "path": "web/recovery.py",
-      "bytes": 24463,
-      "sha256": "afd1a42b33ce4a240a762d33cfa6db26eb2c9aacd9ca0ac910432d90581a0d76"
+      "bytes": 28404,
+      "sha256": "625411a3eb5a7e9281b77d7f152ebfe47b385ed4def27decf28c6b85852e433e"
     },
     {
       "path": "web/resolve_native_export.py",
       "bytes": 23901,
       "sha256": "0406c83b867cb682f6201c176f0a97be8a9f24c45b5603629469f09dcd2d31ce"
+    },
+    {
+      "path": "web/resume_storage.py",
+      "bytes": 9958,
+      "sha256": "d40255a852db93c5fcff15fe9d661fdea23a1d4a884e5ffd677ec043c1e96cdb"
     },
     {
       "path": "web/review_compilation.py",
@@ -566,13 +683,18 @@
     },
     {
       "path": "web/server.py",
-      "bytes": 56164,
-      "sha256": "ab6714b9778dbf825a1440fda26c0fd7a18983a51efbf2ddf5867d9cc677c846"
+      "bytes": 57250,
+      "sha256": "852d00e3d3ce5492d6a32aba6b1af8cce741d099f6db0435ad1d95dfebd00928"
     },
     {
       "path": "web/service.py",
       "bytes": 2739,
       "sha256": "ed1702835c92b2aa6addc83f6569b0736c432a341b9ad6363ebd6af8865aff29"
+    },
+    {
+      "path": "web/source_audio_recheck.py",
+      "bytes": 11928,
+      "sha256": "0c3eacd341302d041f131876f475ad92596eb10e851d70fe2db909cd4cdc15d9"
     },
     {
       "path": "web/source_language.py",
@@ -581,8 +703,8 @@
     },
     {
       "path": "web/static/app.js",
-      "bytes": 42629,
-      "sha256": "567a81c1b972b39b95747d16a35b4ddb3c4242bca05a98b6431ee7e934509047"
+      "bytes": 43458,
+      "sha256": "9611dbef463a668684f75d7436a3fcd27d628b54aea65147ae0b28fc5d9f0768"
     },
     {
       "path": "web/static/index.html",
@@ -600,14 +722,29 @@
       "sha256": "390cc186da2d655163762fd015283802b49b835d4b9c9d1319a97b000ddbb2a0"
     },
     {
+      "path": "web/subtitle_preflight.py",
+      "bytes": 2156,
+      "sha256": "0472c40741321cb3ac38d5563754dedecc417be505b2dc562a8b19aaa575373f"
+    },
+    {
+      "path": "web/translation_recovery.py",
+      "bytes": 60427,
+      "sha256": "7dd3712bf42efd9d3b23f95e985f54915e1322aed3dedf01c594fe1f519f8840"
+    },
+    {
+      "path": "web/translation_reuse.py",
+      "bytes": 10111,
+      "sha256": "ead2b1c0d3b81f083138b560a08815fb1bcbdcfc6f36899ab0aff34db535d42a"
+    },
+    {
       "path": "web/verify_natural_compact.py",
       "bytes": 16404,
       "sha256": "25b7e287cb75b131adfa8b8b0e6eb768292e8c8f7b6316efb4b6bb848ec03369"
     },
     {
       "path": "web/website_recovery.py",
-      "bytes": 36533,
-      "sha256": "cdbe44ee987d667ed9b1dee07e8c6b20980616a993ac65c5e1aef502878d5930"
+      "bytes": 37692,
+      "sha256": "7992e3e97941d3cd3e9f89f8e5017f34968cb198b652880d2c4e8dab7d7a3945"
     },
     {
       "path": "web/website_review.py",
@@ -620,7 +757,7 @@
       "sha256": "7d78ba82c3b72a97fd0da84a89f95981777f91d496f7226d99fc14eade7efcdd"
     }
   ],
-  "release_revision": "Website checkpoint recovery with bounded Proxy text editing and independent review, local media repair, and versioned manual corrections",
+  "release_revision": "Fixed local recovery controller, source-bound translation checks, same-text acoustic fallback, encoded AAC mastering, subtitle preflight, verified storage reuse and versioned delivery archive",
   "baseline_tag": "locked-2026-10-21",
   "source_language_policy": "automatic_detection_and_proxy_two_pass",
   "episode_max_seconds": 1800,
@@ -642,7 +779,7 @@
     ],
     "opacity": 0.55
   },
-  "release_id": "website-recovery-2026-10-22",
+  "release_id": "fixed-controller-recovery-2026-10-24",
   "previous_release_tag": "philos-club-serif-2026-10-21",
   "current_release_tag": null,
   "website_recovery": {
@@ -659,6 +796,19 @@
     "failed_storage_job_reserve_gib": 2,
     "runtime_free_gib_floor": 2,
     "proxy_arbitrary_code_execution": false,
-    "manual_review_in_website": true
+    "manual_review_in_website": true,
+    "transient_decision_mode": "deterministic_transport_policy_v1",
+    "transient_max_per_failure": 1,
+    "transient_max_per_job": 2,
+    "text_and_media_budgets_separate": true,
+    "source_bound_local_translation_recheck": true,
+    "pre_tts_subtitle_preflight": true,
+    "same_text_torch25_acoustic_fallback": true,
+    "encoded_aac_mastering_recovery": true,
+    "verified_background_scratch_cleanup": true,
+    "completed_delivery_archive": "成片",
+    "old_delivery_versions_preserved": true,
+    "low_dynamic_asr_threshold_db": 12,
+    "singleton_complete_sentence_max_s": 24
   }
 }

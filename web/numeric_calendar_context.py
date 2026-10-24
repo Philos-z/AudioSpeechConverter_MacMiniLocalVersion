@@ -21,7 +21,7 @@ KNOWN_PEOPLE=re.compile(r'(?P<number>'+COUNT+r')\s+(?P<description>(?:(?:zusätz
 BARE_RETURN=re.compile(r'(?P<number>'+COUNT+r')(?=\s+kehr(?:ten|en)\b[^.!?]{0,120}\bzurück\b[^.!?]{0,60}\bHeimat\b)',re.I)
 PERSON_CONTEXT=re.compile(r'\b(?:Arbeitnehmer(?:n|in|innen)?|Menschen|Personen|Migranten|Arbeiter(?:n|innen)?|Gastarbeiter(?:n|innen)?)\b',re.I)
 COMPETING_SUBJECT=re.compile(r'\b(?:Fahrzeug\w*|Flugzeug\w*|Autos?|Maschine\w*|Güter\w*|Tier\w*|Vögel|Züge|Schiff\w*)\b',re.I)
-YEAR=re.compile(r'(?<![\d.,])(?:18\d{2}|19\d{2}|20\d{2}|21\d{2}|2200)(?![\d.,])')
+YEAR=re.compile(r'(?<![\d.,])(?:18\d{2}|19\d{2}|20\d{2}|21\d{2}|2200)(?!\d|[.,]\d)')
 EXPLICIT_NONYEAR_UNIT=re.compile(r'\s*(?:€|EUR\b|Euro\b|Dollar\b|USD\b|%|Prozent\w*|Menschen\b|Personen\b|Soldaten\b|Arbeitnehmer\w*|Fahrzeug\w*|Autos?\b|Kilometer\w*|km\b|Meter\w*|Tonnen?\b|kg\b|Millionen?\b|Mrd\b|Milliarden?\b)',re.I)
 
 
@@ -93,15 +93,19 @@ def preprocess(source,target,previous_context=None):
     edits=[]
     for match in YEAR.finditer(source):
         tail=source[match.end():];prefix=source[max(0,match.start()-110):match.start()]
-        if EXPLICIT_NONYEAR_UNIT.match(tail):continue
+        if EXPLICIT_NONYEAR_UNIT.match(tail) or re.match(r'er[-\s]Jahren?\b',tail,re.I):continue
         direct=bool(re.search(r'\b(?:Ende|Anfang)\s*$',prefix,re.I))
+        budget_year=bool(re.search(r'\b(?:Bundes)?haushalt\s*$',prefix,re.I)
+            or (re.search(r'\bfür\s*$',prefix,re.I)
+                and re.match(r'\s*(?:[.,;:!?]|$|(?:Steuereinnahmen|Einnahmen|Ausgaben|Haushalt|Budget|'
+                             r'werden|wird|wurde|wurden|ist|sind|war|waren|erwartet|geplant)\b)',tail,re.I)))
         range_start=bool(re.search(r'\bvon\s*$',prefix,re.I) and re.match(r'\s+bis\b[^.!?]{0,40}\b(?:18|19|20|21)\d{2}\b',tail,re.I))
         range_end=bool(re.search(r'\bvon\s+(?:18|19|20|21)\d{2}(?:\s+Jahre)?\s+bis(?:\s+zum\s+(?:Stopp|Ende))?\s*$',prefix,re.I))
-        if direct or range_start or range_end:
+        if direct or budget_year or range_start or range_end:
             edits.append((match.end(),match.end(),' Jahre'))
             evidence.append({'kind':'explicit_historical_year_context','comparison_span':list(match.span()),
                 'value':int(match.group()),'source_context':prefix[-90:]+match.group()+tail[:50],
-                'reason':'Ende/Anfang year' if direct else 'von/bis paired historical year range'})
+                'reason':'Ende/Anfang year' if direct else 'explicit für/Haushalt year' if budget_year else 'von/bis paired historical year range'})
     source=_replace_spans(source,edits)
     return {'source':source,'target':target,'calendar_errors':errors,'evidence':evidence,'review_required':review,
         'original_source_preserved':original_source,'original_target_preserved':original_target}

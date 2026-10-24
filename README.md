@@ -1,8 +1,10 @@
 # AudioSpeechConverter — Mac Mini Local Version
 
-## 网站恢复流程（2026-10-22）
+## 固定恢复与成片归档（2026-10-24）
 
-上传后由网站与既有Proxy完成翻译、独立审校和有界恢复。原词可保守意译并留痕；仍有疑点时可在网页听原句、更正文字、保存后从断点继续。局部配音与画面问题按固定动作处理，保留旧成果、恢复预算及严格最终校验。
+上传后由本机控制器执行固定流程，Proxy 负责文字编辑和独立审校。已确认的临时网络故障按本地有限策略重试；翻译疑点按当前原片和逐行输入局部复核。异常声音使用相同原句、参考与正式 Torch25 参数重配，保留其他声音和旧版本；配音前预检双语字幕，导出后核验实际 AAC 响度。
+
+完成的视频及配套音轨、字幕和检查报告自动复制到项目“成片”目录；主视频名为“中文双语成片.mp4”。归档核对全部 SHA，不同修订另存，旧成片保留。断点空间检查只扣除已核验且可复用的阶段，必要时清理当前任务白名单内的可再生背景临时文件。文字和媒体各自的持久预算、8GiB 默认空间余量及严格小于50MB的最终校验继续生效。
 
 使用、限额及停止条件见[网站内恢复说明](docs/WEBSITE_RECOVERY.md)。机器审阅版仍需用户完整试听。
 
@@ -99,8 +101,8 @@ release/          本次源码锁定清单
 ## 验证
 
 ```bash
-envs/asr/bin/python -B -m unittest discover -s tests -v
+vendor/index-tts/.venv/bin/python -B -m unittest discover -s tests -v
 python3.11 scripts/bootstrap_source.py --check
 ```
 
-部分媒体测试需要上述 FFmpeg。新克隆目录的模型、环境和私有设置尚未准备时，不应把源码检查通过当作整条配音流程已部署完成。第三方源码与模型的来源见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+测试使用已准备的 Torch 媒体环境，其中包含 NumPy、SoundFile 和 Pillow；HTTP 检查会创建临时本机端口，字幕几何测试使用 macOS 字体。部分媒体测试需要上述 FFmpeg。新克隆目录的模型、环境和私有设置尚未准备时，不应把源码检查通过当作整条配音流程已部署完成。第三方源码与模型的来源见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

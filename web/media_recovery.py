@@ -140,7 +140,8 @@ def reserve_recovery(folder, action, binding):
     The caller must keep its normal per-job worker lock while doing the action.
     """
     folder = Path(folder).absolute()
-    require(action in {'alignment_split', 'source_rebind', 'picture_holds', 'audio_text_repair'}, 'Unknown recovery action')
+    require(action in {'alignment_split', 'source_rebind', 'picture_holds', 'audio_text_repair',
+        'audio_regenerate', 'encoded_master_repair'}, 'Unknown recovery action')
     require(isinstance(binding, dict) and bool(binding), 'Exact nonempty recovery input binding required')
     token = key({'action': action, 'binding': binding})
     with journal_lock(folder):
@@ -280,7 +281,8 @@ def rebind_no_join(root, folder, old_plan_path):
         'archived_picture_policy': archived_picture, 'outputs': outputs})
 
 
-def repair_alignment(root, folder, plan_path, index_path):
+def alignment_failure_scope(root, folder, plan_path, index_path, expected_manifest_path=None):
+    """Read-only validation of a complete, current needs-review alignment run."""
     root, folder, plan, plan_path = plan_binding(root, folder, plan_path)
     index_path = job_file(folder, index_path)
     index = read(index_path)
@@ -293,6 +295,9 @@ def repair_alignment(root, folder, plan_path, index_path):
         and index.get('source_plan_row_count') == len(plan['source_rows'])
         and index.get('tts_group_count') == len(plan['tts_groups']), 'Alignment index uses a different plan/scope')
     manifest_path = job_file(folder, index['native_manifest']['path'])
+    if expected_manifest_path is not None:
+        require(manifest_path == job_file(folder, expected_manifest_path),
+            'Alignment index uses another audio manifest')
     require(sha(manifest_path) == index['native_manifest']['sha256'], 'Alignment audio manifest changed')
     manifest = read(manifest_path)
     require(manifest.get('phase') == 'complete', 'Generation is incomplete')
@@ -320,6 +325,17 @@ def repair_alignment(root, folder, plan_path, index_path):
             failed.append({'member_ids': list(group['member_ids'])})
         else:
             unresolved.extend(group['member_ids'])
+    require(failed or unresolved, 'Needs-review index has no failed group')
+    return {'root': root, 'folder': folder, 'plan': plan, 'plan_path': plan_path,
+        'index_path': index_path, 'manifest_path': manifest_path, 'failed': failed,
+        'unresolved': unresolved, 'group_count': len(actual)}
+
+
+def repair_alignment(root, folder, plan_path, index_path):
+    bound = alignment_failure_scope(root, folder, plan_path, index_path)
+    root, folder, plan, plan_path = (bound[k] for k in ('root', 'folder', 'plan', 'plan_path'))
+    index_path, manifest_path = bound['index_path'], bound['manifest_path']
+    failed, unresolved = bound['failed'], bound['unresolved']
     if not failed:
         return {'changed': False, 'unresolved_ids': unresolved, 'reason': 'no_failed_multirow_groups'}
     reservation = reserve_recovery(folder, 'alignment_split', {'plan_sha256': sha(plan_path),
@@ -356,12 +372,16 @@ def repair_alignment(root, folder, plan_path, index_path):
         'human_reviewed': False, 'waveform_modified': False}
     save(policy_path, policy)
     return finish_recovery(folder, reservation['token'], {'changed': bool(additional), 'unresolved_ids': unresolved,
-        'split_groups': additional, 'preserved_other_groups': len(actual) - len(additional),
+        'split_groups': additional, 'preserved_other_groups': bound['group_count'] - len(additional),
         'outputs': [record(folder, policy_path), record(folder, evidence)]})
 
 
 def wav_metrics(path, expected):
-    """Validate intact integer PCM and measure the observed low-dynamic/low-ZCR signature."""
+    """Validate PCM; flat-energy audio needs target-free speech verification.
+
+    ZCR remains diagnostic: a high-ZCR noise component must not exempt a flat,
+    unintelligible waveform from ASR, as observed in the 00:56 delivery defect.
+    """
     import numpy as np
     path = Path(path)
     require(sha(path) == expected['sha256'], 'Generated WAV SHA changed')
@@ -392,7 +412,7 @@ def wav_metrics(path, expected):
     zcr = float(np.mean(np.diff(np.signbit(signal)) != 0)) if len(signal) > 1 else 0.
     return {'frames': frames, 'sample_rate': rate, 'channels': channels, 'sample_width': width,
         'finite_samples': True, 'energy_dynamic_range_db': dynamic, 'zero_crossing_rate': zcr,
-        'acoustically_suspicious': dynamic < 12. and zcr < .06,
+        'acoustically_suspicious': dynamic < 12.,
         'peak': float(np.max(np.abs(signal)))}
 
 
@@ -445,7 +465,7 @@ def audio_quality(root, plan_path, manifest_path, output, observer=None, normali
         'helper_code_sha256': sha(__file__),
         'status': 'needs_repair' if repair_ids else 'machine_anomaly_screen_passed',
         'waveform_modified': False, 'human_listened': False,
-        'method': 'Exact native WAV provenance/geometry/finite PCM for every group; observed dynamic<12dB and ZCR<.06 signature; only suspect groups receive local target-free CPU small/int8 ASR; ASR similarity<.4 requires repair. Not voice/pronunciation/listening approval.'}
+        'method': 'Exact native WAV provenance/geometry/finite PCM for every group; dynamic<12dB triggers verification regardless of ZCR; only suspect groups receive local target-free CPU small/int8 ASR; ASR similarity<.4 requires repair. Not voice/pronunciation/listening approval.'}
     save(output, result)
     return result
 

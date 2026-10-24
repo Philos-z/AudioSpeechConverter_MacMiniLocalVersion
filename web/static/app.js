@@ -373,6 +373,10 @@
       picture_holds: $("recovery-holds").checked, reserve_gib: Number($("recovery-reserve").value) };
   }
 
+  function recoveryNeedsTextBudget(category) {
+    return !["storage", "tts", "audio", "alignment", "timing", "picture"].includes(category);
+  }
+
   function updateRecoveryAction() {
     const job = state.selectedJob;
     if (!job) return;
@@ -386,14 +390,16 @@
     const blocked = job.failure?.can_retry === false;
     const changed = info.policy_configured === false || JSON.stringify(policy) !== JSON.stringify(draft);
     const category = job.failure?.category;
+    const textBudgetBlocked = exhausted && recoveryNeedsTextBudget(category);
     const sourceChanged = info.policy_configured === false || policy.enabled !== draft.enabled || policy.source_mode !== draft.source_mode;
     const permittedChange = changed && ((category === "source_review" && draft.enabled && draft.source_mode === "contextual" && sourceChanged)
       || ["tts", "audio", "alignment", "timing", "picture"].includes(category));
-    $("recover-button").disabled = state.recoverPending || state.reviewSaving || !budgetKnown || exhausted || (blocked && !permittedChange);
+    $("recover-button").disabled = state.recoverPending || state.reviewSaving || !budgetKnown || textBudgetBlocked || (blocked && !permittedChange);
     $("retry-button").disabled = state.recoverPending || state.reviewSaving || blocked;
     $("recovery-action-note").textContent = !budgetKnown ? "恢复记录暂不可用，已有成果保留。请刷新后再继续。"
-      : exhausted ? "本任务的文字恢复预算已用完，已有成果已保留。"
+      : textBudgetBlocked ? "本任务的文字恢复预算已用完，已有成果已保留。"
       : blocked && !permittedChange ? "此问题仍需有效修订；重复点击或更改无关选项不会跳过内容检查。"
+      : exhausted ? "文字恢复次数已用完；可继续本地处理，需要新的文字修订时仍会停止。"
       : "按当前选项从断点继续，只重做必要步骤。文字服务仅提供受限文字建议。";
     for (const id of ["recovery-enabled", "recovery-source", "recovery-holds", "recovery-reserve"]) $(id).disabled = state.recoverPending || state.reviewSaving;
   }
@@ -565,12 +571,17 @@
         const actual = displayError(job.error);
         if (actual && !explanation.includes(actual)) explanation += " " + actual;
       }
-      const positions = Array.isArray(failure?.source_windows) ? failure.source_windows.slice(0, 6)
+      const checkLabels = new Set(["数字", "单位", "否定", "条件", "比例", "专名", "原文识别", "独立二审"]);
+      const positions = Array.isArray(failure?.source_windows) ? failure.source_windows.slice(0, 8)
         .filter((item) => Number.isFinite(item?.start_s) && Number.isFinite(item?.end_s)
           && item.start_s >= 0 && item.end_s >= item.start_s && item.end_s <= 172800)
         .map((item) => {
           const stamp = (value) => Math.floor(value / 60) + "分" + String(Math.floor(value % 60)).padStart(2, "0") + "秒";
-          return stamp(item.start_s) + "–" + stamp(item.end_s);
+          const row = typeof item.id === "string" && /^line\d{4,}$/.test(item.id)
+            ? "第" + Number(item.id.slice(4)) + "句" : "";
+          const labels = Array.isArray(item.checks) ? item.checks.filter((label) => checkLabels.has(label)) : [];
+          return row + (labels.length ? "（" + labels.join("、") + "）" : "")
+            + " " + stamp(item.start_s) + "–" + stamp(item.end_s);
         }) : [];
       if (positions.length) explanation += " 原片位置：" + positions.join("、") + "。";
       $("job-error-copy").textContent = explanation;

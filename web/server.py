@@ -38,6 +38,14 @@ MAX_UPLOAD = 1024 ** 3
 RESERVE = 8 * 1024 ** 3
 UPLOAD_MARGIN = 32 * 1024 ** 2  # Streaming receive writes one file; model peak is checked later.
 VERSION = 'philos_lan_web_v1'
+# These diagnoses can resume through fixed local stages. A later source/text
+# repair still reserves its own unchanged website journal budget before calls.
+LOCAL_RESUME_CATEGORIES = frozenset({'storage', 'tts', 'audio', 'alignment', 'timing', 'picture'})
+
+
+def recovery_needs_text_budget(category):
+    # Unknown and content diagnoses must never acquire media recovery rights.
+    return not (isinstance(category, str) and category in LOCAL_RESUME_CATEGORIES)
 
 
 def now():
@@ -347,9 +355,12 @@ class JobManager:
             job = self.jobs.get(job_id)
             if job is None:
                 raise KeyError(job_id)
-            if job['status'] not in {'failed', 'canceled'}:
+            # An explicit retry may revise a completed delivery after the user
+            # reports a defect. Its old artifacts/archive stay available.
+            if job['status'] not in {'failed', 'canceled', 'completed'}:
                 raise ValueError('当前任务无需重试，请等待处理结束。')
-            self._resume_manual_review(job)
+            if job['status'] != 'completed':
+                self._resume_manual_review(job)
             blocked=retry_message(self.root,job)
             if blocked:raise ValueError(blocked)
             return self._queue_retry(job)
@@ -406,13 +417,13 @@ class JobManager:
                 and budget['exhausted'] == (budget['remaining'] == 0))
             if recovery.get('available') is False or not budget_valid:
                 raise ValueError('恢复预算记录暂不可用，已有成果保留，未启动新的恢复。')
-            if budget['exhausted']:
-                raise ValueError('本任务的自动恢复预算已用完，已有成果已保留。')
             options = job.get('options', {})
             old_policy = normalize_policy(options.get('website_recovery', DEFAULT_POLICY))
             changed = 'website_recovery' not in options or old_policy != policy
             failure = public_failure(self.root, job) or {}
             category = failure.get('category')
+            if budget['exhausted'] and recovery_needs_text_budget(category):
+                raise ValueError('本任务的文字恢复预算已用完，已有成果已保留。')
             if policy['reserve_gib'] == 2 and old_policy['reserve_gib'] != 2 and category != 'storage':
                 raise ValueError('仅空间不足的失败任务可以选择2GiB恢复余量。')
             blocked = retry_message(self.root, job)
@@ -634,12 +645,17 @@ class JobManager:
                         artifacts[-1]['sha256'] = item['sha256']
                 if not artifacts or not any(x['kind'] == 'video' for x in artifacts):
                     raise RuntimeError('尚未生成可预览的视频，任务已保留。')
+                from delivery_archive import archive_delivery
+                archived = archive_delivery(self.root, {**job,
+                    'source_sha256':result.get('source_sha256') or job.get('source_sha256')}, result['artifacts'])
                 with self.lock:
                     if self.cancel_events[job_id].is_set():
                         raise Cancelled('任务已取消')
                     job.pop('failure_record',None)
                     job.update(status='completed', stage='completed', progress=100,
                                artifacts=artifacts, updated_at=now(),
+                               delivery_archive=archived,
+                               source_sha256=archived['source_sha256'],
                                metrics=result.get('metrics', {}), duration_s=result.get('duration_s'),
                                warnings=result.get('warnings', []))
                     for field in ('source_language', 'source_language_label', 'episode_count', 'episodes'):

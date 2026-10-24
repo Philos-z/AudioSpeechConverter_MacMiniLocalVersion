@@ -41,7 +41,7 @@ def sha(path):
 
 
 class TranslationCheckedStop(RuntimeError):
-    """The real Flow reached the background boundary after translation checks."""
+    """The real Flow reached the subtitle-preflight boundary after translation checks."""
 
 
 class FakeFlow(pipeline.Flow):
@@ -57,7 +57,7 @@ class FakeFlow(pipeline.Flow):
         if name == "translation":
             self.translation_signature = copy.deepcopy(signature)
             return super().cached(name, signature, outputs)
-        if name == "background":
+        if name in {"subtitle_layout", "background"}:
             raise TranslationCheckedStop()
         raise AssertionError("Unexpected model/media stage: " + name)
 
@@ -92,6 +92,8 @@ class TranslationSignatureTests(unittest.TestCase):
         for path in (self.root / "source.mp4", self.root / "tools/python",
                      self.root / "assets/philos_club_serif_wordmark.png",
                      self.root / "scripts/speaker_plan.py",
+                     self.root / "scripts/compact_edit.py",
+                     self.root / "web/subtitle_preflight.py",
                      self.root / "web/proxy_client.py",
                      self.folder / "separated/htdemucs/original/vocals.wav",
                      self.folder / "separated/htdemucs/original/no_vocals.wav",

@@ -25,9 +25,10 @@ MAX_ROWS = 8
 _JID = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$')
 _SID = re.compile(r'^line\d{4,}$')
 _SHA = re.compile(r'^[a-f0-9]{64}$')
-_TARGETS = {'translation/source_review_hints.json', 'source_plan_revision.json'}
+_TARGETS = {'translation/source_review_hints.json', 'source_plan_revision.json',
+            'revisions/source_review_v1/segments.plan.json'}
 _TERMINAL = {'succeeded', 'failed', 'interrupted'}
-_REASONS = {'source_contextual', 'acoustic', 'timing', 'approved', 'review_rejected',
+_REASONS = {'source_contextual', 'translation_contextual', 'acoustic', 'timing', 'approved', 'review_rejected',
             'invariant_rejected', 'invalid_response', 'proxy_failed', 'interrupted',
             'concurrent_update', 'source_review_required', 'disabled', 'nothing_pending'}
 
@@ -153,7 +154,7 @@ def _journal(folder):
     seen = set()
     counts = {}
     for event in value['events']:
-        if (not isinstance(event, dict) or event.get('action') not in ('source', 'compact')
+        if (not isinstance(event, dict) or event.get('action') not in ('source', 'compact', 'translation')
                 or not _SHA.fullmatch(str(event.get('input_fingerprint', '')))
                 or not _SHA.fullmatch(str(event.get('id', ''))) or event['id'] in seen
                 or event.get('status') not in _TERMINAL | {'reserved', 'editing', 'reviewing', 'applying'}
@@ -195,11 +196,22 @@ def _file_hash(folder, name):
 
 
 def _finish_apply(folder, journal, event):
+    def media_check():
+        if event.get('action')!='translation':return
+        media=event.get('protected_media')
+        if not isinstance(media,dict) or set(media)!={'path','sha256'} or not _SHA.fullmatch(str(media.get('sha256',''))):
+            raise ValueError('恢复事务缺少原片身份保护')
+        root=folder.parent.parent
+        video=_safe(root,media['path'])
+        source=_read(_safe(folder,'source.json'))
+        if Path(source.get('input','')).resolve()!=video or not video.is_file() or _sha(video)!=media['sha256']:
+            raise RecoveryReviewRequired('恢复期间原片已改变，未提交过期资料')
+    media_check()
     protected = event.get('protected_files')
     if not isinstance(protected, dict) or not protected:
         raise ValueError('恢复事务缺少源文件保护记录')
     for name, wanted in protected.items():
-        if (name not in {'segments.json', 'translation/input.json', 'segments.plan.json',
+        if (name not in {'segments.json', 'translation/input.json', 'translation/source_quality_notes.json', 'translation/independent_content_review.json', 'segments.plan.json', 'source.json', 'speakers.json',
                          'revisions/source_review_v1/segments.plan.json'}
                 and not name.startswith('revisions/source_review_v1/evidence/')):
             raise ValueError('恢复事务源文件保护位置不合法')
@@ -208,7 +220,7 @@ def _finish_apply(folder, journal, event):
             _publish(folder, journal)
             raise RecoveryReviewRequired('恢复期间源文资料已改变，未覆盖新资料')
     transaction = event.get('transaction')
-    if (not isinstance(transaction, list) or not transaction or len(transaction) > 2
+    if (not isinstance(transaction, list) or not transaction or len(transaction) > 3
             or len({t.get('target') for t in transaction if isinstance(t, dict)}) != len(transaction)):
         raise ValueError('恢复事务不完整')
     prepared = []
@@ -229,8 +241,10 @@ def _finish_apply(folder, journal, event):
             raise RecoveryReviewRequired('恢复期间资料已改变，未覆盖新资料')
         prepared.append((item, evidence))
     for item, evidence in prepared:
+        media_check()
         if _file_hash(folder, item['target']) != item['after_sha256']:
             _atomic(_safe(folder, item['target']), evidence.read_bytes())
+    media_check()
     event.update(status='succeeded', reason='approved', finished_at=_now())
     _publish(folder, journal)
 
@@ -633,7 +647,7 @@ def run_compact(root, jid, ids, reason, policy=None, client_factory=None):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description='Bounded website text recovery')
-    parser.add_argument('action', choices=('source', 'compact'))
+    parser.add_argument('action', choices=('source', 'compact', 'translation'))
     parser.add_argument('--root', required=True)
     parser.add_argument('--job', required=True)
     parser.add_argument('--ids', help='JSON array of source row IDs, at most eight')
@@ -642,7 +656,10 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         policy = json.loads(args.policy_json) if args.policy_json is not None else None
-        if args.action == 'source':
+        if args.action == 'translation':
+            from translation_recovery import run_automatic
+            result = run_automatic(args.root, args.job, policy=policy,ids=json.loads(args.ids) if args.ids else None)
+        elif args.action == 'source':
             result = run_source(args.root, args.job, policy=policy)
         else:
             result = run_compact(args.root, args.job, json.loads(args.ids or 'null'), args.reason, policy=policy)

@@ -13,6 +13,7 @@ import time
 
 SOURCE_GATE='机器译稿已保存；原文词义仍待核对：'
 TRANSLATION_STAGE='机器翻译与第二遍审校'
+LOCAL_TRANSLATION_STAGE='Proxy处理局部译稿并独立复核'
 _SID=re.compile(r'^line\d{4,}$')
 _SHA=re.compile(r'^[a-f0-9]{64}$')
 _HASHES={}
@@ -63,14 +64,18 @@ def _bound_checkpoint(folder,rows):
         and checkpoint.get('input_rows_sha256')==identity and checkpoint.get('total')==len(rows)) else {}
 
 
-def _revision_fingerprint(root,job):
+def _revision_fingerprint(root,job,*,failure_category=None):
     root=Path(root).resolve();folder,rows,by_id=_input(root,job)
     paths=[root/'web'/name for name in ('pipeline.py','proxy_client.py','numeric_calendar_context.py','source_language.py')]
     paths += [root/'config'/name for name in ('local.json','web_proxy.json')]
     paths += [folder/name for name in ('source_plan_revision.json','segments.plan.json','segments.json',
-        'translation/input.json','translation/source_review_hints.json','translation/report.json','translation/checkpoint.json')]
+        'translation/input.json','translation/source_review_hints.json','translation/source_quality_notes.json','translation/independent_content_review.json','translation/prior_review_reuse.json','translation/report.json','translation/checkpoint.json')]
     paths.append(folder/'revisions/source_review_v1/segments.plan.json')
-    paths += [root/'web'/name for name in ('website_recovery.py','media_recovery.py','website_review.py')]
+    paths += [root/'web'/name for name in ('website_recovery.py','media_recovery.py','website_review.py',
+                                         'translation_recovery.py','translation_reuse.py','source_audio_recheck.py')]
+    # A fixed same-text audio fallback is relevant only to a bound acoustic
+    # rejection. Its installation/change cannot unlock text or unknown faults.
+    if failure_category=='audio':paths.append(root/'web/acoustic_fallback.py')
     paths += [folder/name for name in ('tts/no_join_recovery.json','tts/picture_holds.json',
         'tts/media_recovery_journal.json','recovery/website_journal.json')]
     revision=_read(folder/'source_plan_revision.json',{})
@@ -129,6 +134,79 @@ def _translation_receipt_valid(folder,checkpoint,rows):
         all(_sha(x['path'])==x.get('sha256') for x in outputs))
 
 
+def _check_labels(issues):
+    """Expose fixed labels, never model-written explanations or capabilities."""
+    labels=set()
+    for issue in issues if isinstance(issues,list) else []:
+        if not isinstance(issue,str):continue
+        for words,label in ((('数字','数量'),'数字'),(('单位',),'单位'),(('否定',),'否定'),
+                (('条件',),'条件'),(('比例','百分比'),'比例'),(('专名','人名'),'专名'),
+                (('原文','原词','转写','转录','识别','词义','含义','语义不完整'),'原文识别')):
+            if any(word in issue for word in words):labels.add(label)
+    return sorted(labels)
+
+
+def _local_translation_failure(root,job,folder,rows,by_id):
+    """Read current content rejections and owned recovery evidence only.
+
+    Journal reason strings cannot establish a network failure or retry right.
+    A historical event may explain a rejection only while its request still
+    binds the current rows, source, code and review constraints.
+    """
+    if not rows:return None
+    try:
+        import website_recovery as recovery
+        from translation_recovery import pending,source_pending
+        rejected=pending(folder,rows)
+        source_ids=set(source_pending(folder,rows))
+        ids=[row['segment_id'] for row in rows if row.get('segment_id') in set(rejected)|source_ids]
+        if not ids:return None
+        journal=recovery._journal(folder)
+        bound=[]
+        policy=recovery.normalize_policy(job.get('options',{}).get('website_recovery',{}))
+        for event in journal['events']:
+            if (event['action']!='translation' or event['status']!='failed'
+                    or not set(event['segment_ids'])&set(ids)):continue
+            evidence=recovery._safe(folder,'revisions/source_review_v1/evidence/translation_'+event['id'])
+            request=_read(recovery._safe(evidence,'request.json'),{})
+            if (not isinstance(request,dict) or request.get('schema')!='translation_rejection_recovery_v1'
+                    or request.get('action')!='translation'
+                    or recovery._hash({k:v for k,v in request.items() if k!='items'})!=event['input_fingerprint']
+                    or request.get('input_rows_sha256')!=recovery._hash(rows)
+                    or request.get('source_sha256')!=job.get('source_sha256')
+                    or request.get('policy')!=policy
+                    or request.get('source_revision')!=_sha(folder/'source_plan_revision.json')
+                    or request.get('quality_notes_sha256')!=_sha(folder/'translation/source_quality_notes.json')
+                    or request.get('independent_content_review_sha256')!=_sha(folder/'translation/independent_content_review.json')
+                    or request.get('code')!={name:_sha(Path(root)/'web'/name) for name in
+                        ('translation_recovery.py','source_audio_recheck.py','proxy_client.py','numeric_calendar_context.py')}):continue
+            items=request.get('items')
+            if (not isinstance(items,list) or [item.get('id') for item in items if isinstance(item,dict)]!=event['segment_ids']
+                    or any(item.get('id') not in by_id or item.get('text_source')!=by_id[item['id']].get('text_de')
+                           for item in items)):continue
+            bound.append((event,evidence))
+        latest=bound[-1] if bound else None
+        same_input=(sum(event['input_fingerprint']==latest[0]['input_fingerprint']
+                        for event in journal['events'] if event['action']=='translation') if latest else 0)
+        exhausted=len(journal['events'])>=recovery.MAX_ACTIONS or same_input>=recovery.MAX_PER_INPUT
+        issues={sid:_check_labels(rejected.get(sid,{}).get('checks',[])+rejected.get(sid,{}).get('review_issues',[])) for sid in ids}
+        for sid in ids:
+            if sid in source_ids and '原文识别' not in issues[sid]:issues[sid].append('原文识别')
+            if not issues[sid]:issues[sid]=['独立二审']
+        if latest and latest[0].get('reason')=='invariant_rejected':
+            local=_read(recovery._safe(latest[1],'local_checks.json'),{})
+            checks=local.get('checks',{}) if isinstance(local,dict) else {}
+            if isinstance(checks,dict):
+                for sid in ids:
+                    labels=_check_labels(checks.get(sid,[]))
+                    if labels:issues[sid]=sorted(set(issues[sid]+labels))
+        return {'ids':ids,'issues':issues,'exhausted':exhausted,'source_pending':bool(source_ids),
+                'invariant_rejected':bool(latest and latest[0].get('reason')=='invariant_rejected')}
+    except (OSError,ValueError,TypeError,KeyError,AttributeError):
+        # Broken/stale evidence must neither invent a cause nor block a retry.
+        return None
+
+
 def make_failure_record(root,job,error,stage=None,checkpoint_before=None):
     folder,rows,by_id=_input(root,job);checkpoint=_bound_checkpoint(folder,rows)
     stage=stage or job.get('stage','unknown');kind='unknown';ids=[];checks=[];policy='allowed'
@@ -140,6 +218,7 @@ def make_failure_record(root,job,error,stage=None,checkpoint_before=None):
     revision=_read(folder/'source_plan_revision.json',{})
     revision=revision if isinstance(revision,dict) else {}
     blocked=revision.get('blocking_unresolved',[])
+    local_translation=None;row_checks={}
     if type(error).__name__=='Cancelled' or '任务已取消' in text:
         kind='cancelled';title='任务已取消';message='任务已停止，已完成步骤保留。';action='需要时可以继续此任务。'
     elif transport and metadata.get('category') in {'transport_timeout','connection_reset','http_response'}:
@@ -151,6 +230,18 @@ def make_failure_record(root,job,error,stage=None,checkpoint_before=None):
         kind='source_review';policy='after_change';ids=blocked
         title='等待原文核对';message='机器译稿已保存，原片中仍有词义未确认。'
         action='请核对下方原声位置并更新原文修订；确认后刷新此页继续。直接重试不会消除词义疑点。'
+    elif (stage==LOCAL_TRANSLATION_STAGE and
+            (local_translation:=_local_translation_failure(root,job,folder,rows,by_id))):
+        kind='translation_review';policy='after_change';ids=local_translation['ids']
+        row_checks=local_translation['issues'];checks=[label for values in row_checks.values() for label in values]
+        title='局部译稿检查待处理'
+        message=('局部恢复未通过数字、单位或逻辑检查。' if local_translation['invariant_rejected'] else
+            '局部译稿的原文识别仍待核对。' if local_translation['source_pending'] else
+            '局部译稿仍未通过独立第二遍审校。')
+        action='请核对下方问题句及原声位置，保存有效更正后再继续。已通过的批次保留，重复点击不会跳过检查。'
+        if local_translation['exhausted']:
+            title='局部译稿恢复次数已用完'
+            message+='本任务或同一输入的自动恢复次数已用完，已有成果和检查证据保留。'
     elif '配音' in stage or '字幕' in stage or '画面' in text or 'Proxy处理局部' in stage:
         plan=_read(folder/'tts/semantic_group_plan.json',{})
         current=_sha(folder/'segments.json')
@@ -178,7 +269,8 @@ def make_failure_record(root,job,error,stage=None,checkpoint_before=None):
         failed=[batch for batch in batches.values()
             if isinstance(batch,dict) and batch.get('status')=='failed'
             and batch.get('error_type') in {'InvariantRejectedError','ReviewRejectedError'}]
-        ids=sorted({sid for batch in failed for sid in batch.get('ids',[]) if sid in by_id})
+        from translation_recovery import pending
+        ids=list(pending(folder,rows))
         if ids:
             kind='translation_review';policy='after_change';title='内容检查待处理'
             message='译稿检查仍有未解决项目，已保存通过的批次。'
@@ -189,7 +281,8 @@ def make_failure_record(root,job,error,stage=None,checkpoint_before=None):
                     for issue in issues:
                         checks += [label for word,label in [('数字','数字'),('单位','单位'),('否定','否定'),
                             ('条件','条件'),('比例','比例'),('专名','专名')] if word in str(issue)]
-    windows=[{'id':sid,'start_s':by_id[sid].get('start_s'),'end_s':by_id[sid].get('end_s')} for sid in ids]
+    windows=[{'id':sid,'start_s':by_id[sid].get('start_s'),'end_s':by_id[sid].get('end_s'),
+              **({'checks':row_checks[sid]} if sid in row_checks else {})} for sid in ids]
     verified_translation=(kind=='source_review' and _translation_receipt_valid(folder,checkpoint,rows))
     has_counts=(kind=='translation_review' or verified_translation)
     record={'schema':'local_failure_diagnosis_v1','category':kind,'title':title,'message':message,
@@ -202,7 +295,7 @@ def make_failure_record(root,job,error,stage=None,checkpoint_before=None):
                 'pipeline':'web/pipeline.py','translation_client':'web/proxy_client.py'}},
         'completed':checkpoint.get('completed') if has_counts else None,
         'total':checkpoint.get('total') if has_counts else None,
-        'revision_fingerprint':_revision_fingerprint(root,job),
+        'revision_fingerprint':_revision_fingerprint(root,job,failure_category=kind),
         'created_at':datetime.now(timezone.utc).isoformat()}
     if verified_translation:record['progress_floor']=58.0
     return record
@@ -221,7 +314,7 @@ def public_failure(root,job):
     keys=('category','title','message','next_action','segment_ids','source_windows','checks','completed','total','retry_policy','progress_floor')
     result={key:record[key] for key in keys if key in record}
     result['can_retry']=(record.get('retry_policy')!='after_change' or
-        record.get('revision_fingerprint')!=_revision_fingerprint(root,job))
+        record.get('revision_fingerprint')!=_revision_fingerprint(root,job,failure_category=record.get('category')))
     if record.get('retry_policy')=='after_change' and result['can_retry']:
         result['next_action']='已检测到新的修订，可继续任务并重新检查受影响的步骤。'
     return result

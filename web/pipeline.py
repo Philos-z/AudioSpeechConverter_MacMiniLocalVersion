@@ -166,7 +166,7 @@ def group_manifest_identity(manifest):
 
 
 def stable_group_manifest(folder,manifest_path):
-    """Keep first actual complete receipt; run timings never change caption identity.
+    """Keep an actual complete receipt or explicitly annotated audio composition.
 
     The snapshot remains an unedited real generation manifest. Current-run TTS
     counters still come from manifest_path, while caption validation verifies
@@ -517,7 +517,7 @@ class Flow:
         self.website_policy=normalize_policy(self.options.get('website_recovery',{}))
         self._owned_website_text_argv=None
         self.deadline=self.started+14400
-        self._last_space_check=0.;self._space_low=False
+        self._last_space_check=-math.inf;self._space_low=False
         self._state_lock=threading.RLock()
         self.py=self.root/'vendor/index-tts/.venv/bin/python'
         self.mlx_py=self.root/'vendor/mlx-indextts2-inference/.venv/bin/python'
@@ -538,7 +538,7 @@ class Flow:
             self.check();self.progress=max(self.progress,min(100,float(progress)))
             self.update(stage,self.progress,details)
     def command(self,stage,start,end,argv,env=None,on_line=None,timeout=14400,
-                should_abort=None,report_progress=True):
+                should_abort=None,report_progress=True,review_exit=None):
         def check_command():
             self.check()
             if should_abort and should_abort():raise RuntimeError('并行分析另一项失败，已停止当前步骤')
@@ -576,6 +576,12 @@ class Flow:
                 timings=self.metrics['stage_wall_s'];timings[stage]=timings.get(stage,0)+time.perf_counter()-began
         check_command()
         if result.get('returncode')!=0:
+            # Code 3 is reserved by the subtitle CLI for a fully written review
+            # result. Only its caller can supply the current-input validator;
+            # crashes, signals and transport errors keep the normal failure path.
+            if result.get('returncode')==3 and review_exit is not None and review_exit() is True:
+                if report_progress:self.emit(stage,end)
+                return result
             # The final exception must itself be a transport failure. Another
             # concurrent batch's transport observation cannot override a hard
             # translation/review rejection raised by the actual failing batch.
@@ -595,16 +601,76 @@ class Flow:
         with self._state_lock:
             self.ledger[name]={'fingerprint':key(signature),'outputs':[{'path':str(Path(p).resolve()),'sha256':digest(p)} for p in outputs]}
             save(self.folder/'pipeline_receipts.json',self.ledger)
+    def export_phase_signature(self,candidate,adapter,dependencies,phase,video_name):
+        value={'edl':digest(candidate/'edit_decisions.json'),'phase':phase,'adapter':digest(adapter),
+            'candidate':str(candidate.resolve()),**dependencies}
+        if phase in ('render','verify'):value['master']=digest(candidate/'zh_mix.wav')
+        if phase=='verify':
+            value['video']=digest(candidate/video_name)
+            value['verifier']=digest(script(self.root,'verify_natural_compact.py'))
+        return value
+    def recover_encoded_master(self,candidate,adapter,dependencies):
+        """The local helper proves actual encoded failure and a complete remux.
+
+        Reconcile durable completion before looking at old mix/render receipts:
+        a process can stop after committing media but before updating this ledger.
+        The ordinary final verifier is never marked complete by this operation.
+        """
+        prior_path=candidate/'audio_master_recovery.json'
+        prior=read(prior_path) if prior_path.is_file() else {}
+        self.command('自动校正编码后的音频响度',self.progress,self.progress,
+            [self.asr_py,'-B',script(self.root,'encoded_master_recovery.py'),
+             '--root',self.root,'--job',self.name,'--output',candidate],timeout=900)
+        report=read(candidate/'audio_master_recovery.json')
+        if not report.get('changed'):return False
+        expected={'job':self.name,'candidate':str(candidate.resolve()),
+            'edl_sha256':digest(candidate/'edit_decisions.json'),
+            'master_sha256':digest(candidate/'zh_mix.wav'),
+            'output_sha256':digest(candidate/'group_zh_candidate.mp4')}
+        if (any(report.get(k)!=v for k,v in expected.items())
+                or report.get('video_bitstream_unchanged') is not True
+                or (candidate/'audio_master_recovery.pending.json').exists()):
+            raise RuntimeError('音频回退收据未绑定当前完整媒体；已保留检查记录')
+        self.remember('export_mix',self.export_phase_signature(candidate,adapter,dependencies,'mix',
+            'group_zh_candidate.mp4'),[candidate/name for name in
+                ('group_mix_report.json','zh_mix.wav','zh_mix.m4a','zh.srt','de.srt')])
+        self.remember('export_render',self.export_phase_signature(candidate,adapter,dependencies,'render',
+            'group_zh_candidate.mp4'),[candidate/'group_export.json',candidate/'group_zh_candidate.mp4'])
+        self.metrics['encoded_master_recovery']={'report':str(candidate/'audio_master_recovery.json'),
+            'report_sha256':digest(candidate/'audio_master_recovery.json'),
+            'video_bitstream_unchanged':True,'full_verifier_still_required':True}
+        return {**report,'reused':prior.get('changed') is True
+            and prior.get('output_sha256')==report['output_sha256']}
     def internal(self,action,*args):return [self.py,Path(__file__).resolve(),action,'--root',self.root,'--job',self.name,*args]
+    def translate_with_recovery(self,planned,on_line):
+        from failure_triage import checkpoint_marker
+        before=checkpoint_marker(self.root,self.name)
+        try:
+            return self.command('机器翻译与第二遍审校',46,58,self.internal('_translate'),on_line=on_line,timeout=7200)
+        except RuntimeError as error:
+            self.check()
+            if isinstance(error,StageFailure) or not self.website_policy['enabled'] or self.website_policy['source_mode']!='contextual':
+                raise
+            if checkpoint_marker(self.root,self.name)==before:
+                raise
+            from translation_recovery import pending
+            if not pending(self.folder,planned):
+                raise
+            if not self.text_repair('translation'):
+                raise
+            # The existing outer loop rebuilds identities and reuses all
+            # verified stage/batch outputs; it also enforces the shared limit.
+            raise WebsiteRepairReady('translation_review',{'bound_rejection_repaired':True}) from None
     def text_repair(self,phase,ids=None,reason=None):
         argv=[self.asr_py,'-B',script(self.root,'website_recovery.py'),phase,
             '--root',self.root,'--job',self.name,'--policy-json',json.dumps(self.website_policy)]
-        if ids is not None:argv.extend(['--ids',json.dumps(ids),'--reason',reason])
+        if ids is not None:argv.extend(['--ids',json.dumps(ids)])
+        if reason is not None:argv.extend(['--reason',reason])
         hints=self.folder/'translation/source_review_hints.json'
         before=digest(hints) if hints.is_file() else None
         self._owned_website_text_argv=tuple(str(x) for x in argv)
         try:
-            self.command('Proxy处理局部译稿并独立复核',self.progress,self.progress,argv,timeout=600)
+            self.command('Proxy处理局部译稿并独立复核',self.progress,self.progress,argv,timeout=900 if phase=='translation' else 600)
         finally:self._owned_website_text_argv=None
         changed=(digest(hints) if hints.is_file() else None)!=before
         if phase=='compact' and not changed:
@@ -612,9 +678,108 @@ class Flow:
         return changed
     def media_recovery(self):
         return __import__('media_recovery')
+    def align_group_subtitles(self,group_plan,stable_manifest,align_dir):
+        alignment_index=align_dir/'alignment_manifest.json'
+        def review_exit():
+            self.media_recovery().alignment_failure_scope(self.root,self.folder,group_plan,
+                alignment_index,expected_manifest_path=stable_manifest)
+            return True
+        self.command('对齐逐句双语字幕',79,81,[self.asr_py,'-B',script(self.root,'generic_group_alignment.py'),
+            '--root',self.root,'--plan',group_plan,'--manifest',stable_manifest,'--output',align_dir,
+            '--cache-dir',self.root/'cache/group_subtitle_whisper_v1','--progress-json'],
+            review_exit=review_exit)
+        return read(alignment_index)
     def space_reserve(self,config):
         return (self.website_policy['reserve_gib'] if self.website_policy['enabled']
             else float(config.get('minimum_free_gib',8)))
+    def current_space_preflight(self,config,source,source_sha,prepare_signature,planned_output_duration_s=None):
+        """Credit only producer stages that will pass the current cache check."""
+        if self.space_reserve(config)!=8:
+            return space_preflight(max(source['duration_s'],planned_output_duration_s or 0),
+                shutil.disk_usage(self.root).free,self.space_reserve(config))
+        from resume_storage import preflight,cleanup_candidates,REQUIRED_OUTPUTS,BACKGROUND_TEMPORARIES
+        stages={}
+        def proof(name,signature):
+            item=self.ledger.get(name,{})
+            if item.get('fingerprint')!=key(signature):return False
+            expected={str(self.folder/p) for p in REQUIRED_OUTPUTS[name]}
+            outputs=item.get('outputs')
+            if not isinstance(outputs,list) or {p.get('path') for p in outputs}!=expected:return False
+            files=[]
+            for saved in outputs:
+                path=Path(saved['path'])
+                if not path.is_file() or any(p.is_symlink() for p in (path,*path.parents)):return False
+                actual=digest(path)
+                if actual!=saved.get('sha256'):return False
+                files.append({**saved,'actual_sha256':actual,'bytes':path.stat().st_size,
+                    'regular_file':True,'is_symlink':False})
+            stages[name]={'source_sha256':source_sha,'fingerprint':item['fingerprint'],
+                'expected_fingerprint':key(signature),'reusable':True,'will_rebuild':False,'outputs':files}
+            return True
+        def refresh():
+            stages.clear()
+            if proof('prepare',prepare_signature):
+                signature={'audio':digest(self.folder/'audio/original.wav'),'weight_sha256':DEMUCS_SHA,
+                    'segment':5,'shifts':0,'overlap':.25,'device':'mps'}
+                if proof('separation',signature):
+                    signature={'no_vocals_sha':digest(self.folder/'separated/htdemucs/original/no_vocals.wav'),
+                        'duration':source['duration_s'],'code':implementation_signature(('background_job',)),
+                        'gain_body_db':10,'gain_titles_db':4}
+                    proof('background',signature)
+        def estimate():
+            return preflight(float(source['duration_s']),shutil.disk_usage(self.root).free,
+                job_path=str(self.folder),source_sha256=source_sha,stages=stages,
+                planned_output_duration_s=planned_output_duration_s)
+        def temporary(path):
+            if not path.is_file() or any(p.is_symlink() for p in (path,*path.parents)):return None
+            observed=path.stat();sha=digest(path)
+            if file_state(path.stat())!=file_state(observed):return None
+            return {'path':str(path),'sha256':sha,'actual_sha256':sha,'bytes':observed.st_size,
+                'regular_file':True,'is_symlink':False}
+        def file_state(value):
+            return (value.st_dev,value.st_ino,value.st_size,value.st_mtime_ns)
+        def eligible():
+            files=[item for name in BACKGROUND_TEMPORARIES
+                   if (item:=temporary(self.folder/name)) is not None]
+            return cleanup_candidates(job_path=str(self.folder),source_sha256=source_sha,
+                stages=stages,temporary_files=files)
+        refresh();result=estimate()
+        report=self.folder/('export_space_preflight.json' if planned_output_duration_s is not None else 'space_preflight.json')
+        # Persist failures too: an earlier successful report must not describe
+        # a later failed estimate. No planned deletion is treated as free space.
+        save(report,result)
+        if not result['sufficient']:
+            candidates=eligible()
+            if candidates:
+                source_path=Path(source['input'])
+                if (not source_path.is_file() or any(p.is_symlink() for p in (source_path,*source_path.parents))
+                        or digest(source_path)!=source_sha):
+                    raise RuntimeError('原片身份已改变，未清理临时文件')
+                receipt=self.folder/'recovery/storage_cleanup'/(str(time.time_ns())+'.json')
+                record={'schema':'verified_background_scratch_cleanup_v1','source_sha256':source_sha,
+                    'before':result,'candidates':candidates,'removed':[],'status':'checking',
+                    'old_assets_deleted':False,'protected_reserve_bytes':8*1024**3}
+                save(receipt,record)
+                for candidate in candidates:
+                    self.check();refresh()
+                    if digest(source_path)!=source_sha:raise RuntimeError('清理前原片身份已改变')
+                    current=next((item for item in eligible() if item==candidate),None)
+                    if current is None:break
+                    path=Path(candidate['path']);observed=path.stat()
+                    expected={k:candidate[k] for k in ('path','sha256','bytes')}
+                    expected.update(actual_sha256=candidate['sha256'],regular_file=True,is_symlink=False)
+                    if temporary(path)!=expected:break
+                    if path.is_symlink() or file_state(path.stat())!=file_state(observed):break
+                    path.unlink()
+                    record['removed'].append(candidate);record['status']='removed_verified_scratch'
+                    save(receipt,record)
+                refresh();result=estimate()
+                record.update(status='complete',after=result,actual_free_bytes_after=result['free_bytes'])
+                save(receipt,record)
+                result['scratch_cleanup_receipt']=str(receipt)
+        save(report,result)
+        if not result['sufficient']:raise RuntimeError(result['message'])
+        return result
     def stages(self):
         self.check()
         mastering=mastering_policy(self.options)
@@ -665,8 +830,7 @@ class Flow:
             self.remember('prepare',prepare_signature,[source_json,self.folder/'audio/original.wav',self.folder/'audio/asr16k.wav'])
         source=read(source_json);geometry(source['probe'])
         if 'space_preflight' not in self.metrics:
-            self.metrics['space_preflight']=space_preflight(float(source['duration_s']),shutil.disk_usage(self.root).free,
-                self.space_reserve(config))
+            self.metrics['space_preflight']=self.current_space_preflight(config,source,source_sha,prepare_signature)
             save(self.folder/'space_preflight.json',self.metrics['space_preflight'])
         save(self.folder/'processing_request.json',{'processing_authorized':True,'scope':'private_local_evaluation',
             'requested_via':'explicit local web start','source_rights_verified':False,'human_reviewed':False,
@@ -724,6 +888,8 @@ class Flow:
         translated=self.folder/'segments.json';translation_report=self.folder/'translation/report.json'
         tsig={'plan':key(planned),'speakers':digest(self.folder/'speakers.json'),
             'source_review_hints_sha256':digest(self.folder/'translation/source_review_hints.json') if (self.folder/'translation/source_review_hints.json').is_file() else None,
+            'prior_review_reuse_sha256':digest(self.folder/'translation/prior_review_reuse.json') if (self.folder/'translation/prior_review_reuse.json').is_file() else None,
+            'prior_review_reuse_code':digest(Path(__file__).with_name('translation_reuse.py')) if (self.folder/'translation/prior_review_reuse.json').is_file() else None,
             'source_plan_revision_sha256':digest(self.folder/'source_plan_revision.json') if (self.folder/'source_plan_revision.json').is_file() else None,
             'source_language':actual_language,'proxy_client_code':digest(Path(__file__).with_name('proxy_client.py')),'method':'actual_two_pass_numeric_checks'}
         if not self.cached('translation',tsig,[]):
@@ -731,16 +897,35 @@ class Flow:
                 try:event=json.loads(text)
                 except (ValueError,TypeError):return
                 if event.get('event')=='translation_progress':self.emit('机器翻译与第二遍审校',46+12*event['completed']/max(1,event['total']),{'completed':event['completed'],'total':event['total'],'human_reviewed':False})
-            self.command('机器翻译与第二遍审校',46,58,self.internal('_translate'),on_line=tr_line,timeout=7200)
+            self.translate_with_recovery(planned,tr_line)
             validate_translations(planned,read(translated)['segments'],read(translation_report))
             self.remember('translation',tsig,[translated,translation_report])
         validate_translations(planned,read(translated)['segments'],read(translation_report))
+        from translation_recovery import source_pending
+        source_rechecks=source_pending(self.folder,planned)
+        if source_rechecks:
+            if self.website_policy['enabled'] and self.website_policy['source_mode']=='contextual':
+                if self.text_repair('translation',ids=source_rechecks[:8]):
+                    raise WebsiteRepairReady('source_recheck_before_tts',{'affected_count':min(8,len(source_rechecks))})
+            raise RuntimeError('原文识别疑点仍待复核，未启动配音：'+','.join(source_rechecks))
         if previous_group_plan and self.website_policy['enabled']:
             self.media_recovery().rebind_no_join(self.root,self.folder,previous_group_plan)
         if source_revision and source_revision['blocking_unresolved']:
             raise RuntimeError('机器译稿已保存；原文词义仍待核对：'+','.join(source_revision['blocking_unresolved'])+
                 '。未启动配音或最终导出，不能标记为最终完成。')
         rows=read(translated)['segments']
+        subtitle_preflight=self.folder/'subtitle_preflight.json'
+        layout_signature={'segments':digest(translated),'renderer':digest(self.root/'scripts/compact_edit.py'),
+            'checker':digest(script(self.root,'subtitle_preflight.py'))}
+        if not self.cached('subtitle_layout',layout_signature,[]):
+            self.command('检查双语字幕排版',59,59,[self.py,'-B',script(self.root,'subtitle_preflight.py'),
+                '--root',self.root,'--job',self.name])
+            layout=read(subtitle_preflight)
+            if (layout.get('phase')!='complete' or layout.get('source_rows')!=len(rows)
+                    or layout.get('segments_sha256')!=digest(translated)
+                    or layout.get('renderer_sha256')!=digest(self.root/'scripts/compact_edit.py')):
+                raise RuntimeError('双语字幕预检未完整通过，已保留译稿')
+            self.remember('subtitle_layout',layout_signature,[subtitle_preflight])
         grouping=self.options.get('tts_grouping','sentence_v1')
         if grouping not in ('sentence_v1',DEFAULT_TTS_GROUPING):raise ValueError('无效的连续配音策略')
         background=self.folder/'audio/background_independent.wav'
@@ -841,6 +1026,10 @@ class Flow:
         if logits_usage is not None:self.metrics['raw_logits_checks']=logits_usage
         self.remember('native_tts',tts_sig,[native_manifest,*[Path(r['audio']) for r in manifest['utterances']]])
         export_manifest=self.resolve_native_audio(native_manifest,grouped=grouped)
+        if grouped:
+            import acoustic_fallback
+            base_stable_manifest=stable_group_manifest(self.folder,native_manifest)
+            export_manifest=acoustic_fallback.resolve(self.root,self.folder,group_plan,base_stable_manifest)
         if export_manifest!=native_manifest:manifest=read(export_manifest)
         adapter=script(self.root,'group_compact_adapter.py' if grouped else 'natural_compact_adapter.py')
         export_dependencies={'mastering':mastering_signature(self.root,adapter,mastering),
@@ -851,7 +1040,7 @@ class Flow:
         export_identity={'audio':[(r['segment_id'],r['cache_key'],r['sha256']) for r in manifest['utterances']],
             'receipt':digest(receipt),'adapter':digest(adapter),'segments':digest(translated),
             'natural_join_groups':digest(self.folder/'join_groups.native.json'),**export_dependencies}
-        if export_manifest!=native_manifest:
+        if export_manifest!=native_manifest and not grouped:
             export_identity.update(native_audio_selection=digest(self.folder/'native_audio_selections.json'),
                 native_audio_resolver=digest(script(self.root,'resolve_native_export.py')))
         subtitle_plan=self.folder/'subtitle_pages.json'
@@ -863,13 +1052,20 @@ class Flow:
             export_identity.update(picture_hold_review=digest(picture_holds),
                 picture_hold_helper=digest(script(self.root,'picture_holds.py')))
         if grouped:
-            stable_manifest=stable_group_manifest(self.folder,native_manifest)
+            stable_manifest=stable_group_manifest(self.folder,export_manifest)
+            # A second local repair must extend the existing immutable
+            # composition, preserving any earlier successful Torch fallback.
+            repair_base=export_manifest if manifest.get('schema')==acoustic_fallback.COMPOSITION else base_stable_manifest
+            if manifest.get('schema')==acoustic_fallback.COMPOSITION:
+                torch_groups=sum(row['content'].get('schema')=='continuous_utterance_v1'
+                    for row in manifest['utterances'])
+                self.metrics['audio_composition']={'one_inference_run':False,
+                    'torch25_fallback_groups':torch_groups,'preserved_native_groups':len(manifest['utterances'])-torch_groups,
+                    'same_approved_text_and_reference':True,'human_listened':False}
+                export_identity['acoustic_fallback_resolver']=digest(script(self.root,'acoustic_fallback.py'))
             align_dir=self.folder/'tts'/('subtitle_alignment_'+digest(group_plan)[:12]+'_'+stable_manifest.parent.name[:12])
             alignment_index=align_dir/'alignment_manifest.json'
-            self.command('对齐逐句双语字幕',79,81,[self.asr_py,'-B',script(self.root,'generic_group_alignment.py'),
-                '--root',self.root,'--plan',group_plan,'--manifest',stable_manifest,'--output',align_dir,
-                '--cache-dir',self.root/'cache/group_subtitle_whisper_v1','--progress-json'])
-            alignment=read(alignment_index)
+            alignment=self.align_group_subtitles(group_plan,stable_manifest,align_dir)
             if alignment.get('all_groups_ready') is not True:
                 if self.website_policy['enabled']:
                     repaired=self.media_recovery().repair_alignment(self.root,self.folder,group_plan,alignment_index)
@@ -882,15 +1078,28 @@ class Flow:
             if self.website_policy['enabled']:
                 quality=self.folder/'tts'/('audio_quality_'+key(group_manifest_identity(manifest))[:16]+'.json')
                 self.command('检查配音声学异常',81,81,[self.asr_py,'-B',script(self.root,'media_recovery.py'),
-                    'audio-quality','--root',self.root,'--plan',group_plan,'--manifest',stable_manifest,
+                    'audio-quality','--root',self.root,'--plan',group_plan,'--manifest',repair_base,
                     '--output',quality],timeout=1800)
                 checked=read(quality)
                 if checked.get('complete') is not True:raise RuntimeError('配音声学检查尚未完成，已保留全部音频')
                 self.metrics['audio_quality']={k:checked[k] for k in checked if k not in {'rows','source_rows','flagged_groups'}}
                 ids=checked.get('needs_repair_ids',[])
                 if ids:
-                    self.text_repair('compact',ids[:8],'acoustic')
-                    raise WebsiteRepairReady('compact_acoustic_failure',{'source_rows':ids[:8]})
+                    bad_groups=set(checked.get('needs_repair_groups',[]))
+                    if any(row['segment_id'] in bad_groups and
+                            row['content'].get('schema')!='native_mlx_whole_utterance_v1'
+                            for row in manifest['utterances']):
+                        raise RuntimeError('备用配音仍未通过声学检查；已保留两版声音、完整译稿和逐句证据')
+                    # A waveform failure is not evidence that the approved
+                    # translation needs editing. Retry only those intact groups
+                    # with the preserved formal Torch25 backend, then rerun all
+                    # alignment/media checks on the explicit composition.
+                    request=acoustic_fallback.prepare(self.root,self.folder,group_plan,
+                        repair_base,quality)
+                    self.command('本机重新生成异常配音',self.progress,self.progress,request['argv'],timeout=1800)
+                    repaired=acoustic_fallback.finish(self.root,self.folder,group_plan,
+                        repair_base,quality,Path(request['fallback_manifest']))
+                    raise WebsiteRepairReady('regenerate_failed_speech',repaired)
             export_identity.update(group_plan=digest(group_plan),alignment_index=digest(alignment_index))
             hold_policy=self.folder/'tts/picture_holds.json'
             export_identity['picture_holds']=digest(hold_policy) if hold_policy.is_file() else None
@@ -926,22 +1135,29 @@ class Flow:
                     self.text_repair('compact',ids[:8],'timing')
                     raise WebsiteRepairReady('compact_picture_overrun',{'source_rows':ids[:8]})
             raise RuntimeError('部分中文台词超出安全画面时间；已保留完整音频和逐句清单，未截字或强行加速')
+        if grouped and any((candidate/name).is_file() for name in
+                ('audio_master_recovery.pending.json','audio_master_recovery.json')):
+            self.recover_encoded_master(candidate,adapter,export_dependencies)
         for phase,stage,lo,hi in [('mix','混合连续背景与中文配音',83,89),('render','导出540p双语视频',89,97),('verify','检查完整媒体',97,99)]:
             names=({'mix':'group_mix_report.json','render':'group_export.json','verify':'group_verification.json'} if grouped
                 else {'mix':'natural_mix_report.json','render':'compact_export.json','verify':'verification.json'})
             video_name='group_zh_candidate.mp4' if grouped else 'landscape_natural_candidate.mp4'
             proof=candidate/names[phase]
-            phase_sig={'edl':digest(candidate/'edit_decisions.json'),'phase':phase,'adapter':digest(adapter),
-                'candidate':str(candidate.resolve()),**export_dependencies}
-            if phase in ('render','verify'):phase_sig['master']=digest(candidate/'zh_mix.wav')
-            if phase=='verify':
-                phase_sig['video']=digest(candidate/video_name)
-                phase_sig['verifier']=digest(script(self.root,'verify_natural_compact.py'))
+            phase_sig=self.export_phase_signature(candidate,adapter,export_dependencies,phase,video_name)
             # Audio/video proof also binds their actual bytes before reuse.
             cached=self.cached('export_'+phase,phase_sig,[])
             if phase in ('render','verify') and (candidate/video_name).is_file() and (candidate/video_name).stat().st_size>=50_000_000:
                 cached=False
             if not cached:
+                if phase=='mix':
+                    # New speech can be longer than the source estimate. Check
+                    # the actual EDL before allocating any future mix/render WAVs.
+                    current_edl=read(candidate/'edit_decisions.json')
+                    actual_duration=max(float(audit['duration_s']),float(current_edl['duration_s']),
+                        float(current_edl['frames'])/float(current_edl['fps']))
+                    self.metrics['export_space_preflight']=self.current_space_preflight(config,source,
+                        source_sha,prepare_signature,planned_output_duration_s=actual_duration)
+                    save(self.folder/'export_space_preflight.json',self.metrics['export_space_preflight'])
                 def media_line(text):
                     try:event=json.loads(text)
                     except (ValueError,TypeError):return
@@ -958,7 +1174,17 @@ class Flow:
                 if not grouped:argv.extend(['--job',self.name])
                 if phase=='mix':argv.extend(['--mastering-policy',mastering])
                 if phase=='render' and not grouped:argv.append('--progress-json')
-                self.command(stage,lo,hi,argv,on_line=media_line if phase=='render' else None)
+                try:
+                    self.command(stage,lo,hi,argv,on_line=media_line if phase=='render' else None)
+                except RuntimeError:
+                    self.check()
+                    # The helper independently scans the current file. Error
+                    # wording never authorizes changing an otherwise valid mix.
+                    if grouped and phase=='verify' and self.website_policy['enabled']:
+                        recovered=self.recover_encoded_master(candidate,adapter,export_dependencies)
+                        if recovered and not recovered.get('reused'):
+                            raise WebsiteRepairReady('repair_encoded_master',recovered) from None
+                    raise
                 outputs=[proof]
                 if phase=='mix':outputs += [candidate/'zh_mix.wav',candidate/'zh_mix.m4a',candidate/'zh.srt',candidate/'de.srt']
                 if phase=='render':outputs += [candidate/video_name]
@@ -987,7 +1213,7 @@ class Flow:
             ('中文双语视频草稿',video_name,'video'),('中文配音与背景','zh_mix.m4a','audio'),
             ('中文字幕','zh.srt','subtitle'),(language_label(actual_language)+'字幕',source_subtitle,'subtitle'),('工程检查',names['verify'],'report')]]
         for artifact in artifacts:artifact['sha256']=digest(Path(artifact['path']))
-        return {'artifacts':artifacts,'duration_s':audit['duration_s'],'warnings':self.warnings,'metrics':self.metrics,
+        return {'artifacts':artifacts,'source_sha256':source_sha,'duration_s':audit['duration_s'],'warnings':self.warnings,'metrics':self.metrics,
                 **source_language_metadata(actual_language),'human_reviewed':False,'status':'machine_reviewed_draft'}
     def process_episodes(self,config,source_file,source_sha,probe,duration,track,requested_language,episode_max,
                          source_window_max=None,replan_attempt=0):
@@ -1098,7 +1324,7 @@ class Flow:
         self.metrics['duration_replan_attempts']=replan_attempt
         save(self.folder/'web_pipeline_metrics.json',self.metrics)
         self.emit('全部分集机器草稿已完成',100,{'episode_count':total})
-        return {'artifacts':artifacts,'duration_s':self.metrics['output_duration_s'],
+        return {'artifacts':artifacts,'source_sha256':source_sha,'duration_s':self.metrics['output_duration_s'],
             'episode_count':total,'episodes':summaries,**source_language_metadata(actual),
             'warnings':self.warnings,'metrics':self.metrics,'human_reviewed':False,'status':'machine_reviewed_draft'}
 
@@ -1299,10 +1525,11 @@ def _run_with_recovery(root,job,update,run_command,is_cancelled,started,waited,d
         value=dict(current);times={}
         for attempt in attempts:
             for stage,elapsed in attempt['stage_wall_s'].items():times[stage]=times.get(stage,0.)+elapsed
-        if recovery_wall:times['受限AI恢复建议']=recovery_wall
+        if recovery_wall:times['固定恢复策略']=recovery_wall
         value.update(stage_wall_s=times,resource_wait_seconds=waited,
             wall_seconds=time.perf_counter()-started,status=status,
             pipeline_attempts=attempts,recovery={'enabled':True,'advice_wall_seconds':recovery_wall,
+                'decision_mode':'deterministic_transport_policy_v1','proxy_advice_calls':0,
                 'records':recoveries,'data_only_actions':True,'arbitrary_code_or_config_changes':False,
                 'verified_output_reuse_action_enabled':False,'failed_and_advice_wait_included':True,
                 'website_data_repairs':data_rounds,'max_data_repair_rounds_per_run':6,
@@ -1334,9 +1561,9 @@ def _run_with_recovery(root,job,update,run_command,is_cancelled,started,waited,d
             if not policy['retryable']:
                 metrics(flow.metrics,'failed');raise
             controller=recovery.RecoveryController(root,job['id'])
-            # The packet contains enum-like local evidence only. No source or
-            # translated text, raw log, nonce, environment, URL, key or path is
-            # exposed to the advisor model.
+            # Only typed, nonce-verified transport evidence reaches this fixed
+            # local policy. Translation and media recovery have their own
+            # bounded paths; a model never decides permissions or retry budgets.
             packet={'schema':'bounded_recovery_packet_v1','stage':policy['stage'],
                 'error_class':policy['error_class'],'failure_metadata':error.failure_metadata}
             private=folder/'recovery';packet_path=private/('packet_'+str(len(recoveries)+1)+'.json')
@@ -1351,8 +1578,8 @@ def _run_with_recovery(root,job,update,run_command,is_cancelled,started,waited,d
                 # A unique filename prevents an earlier decision from being
                 # accepted after a failed or cancelled advisory subprocess.
                 if decision_path.exists():decision_path.unlink()
-                flow.command('受限AI恢复建议',progress,progress,[flow.asr_py,'-B',script(root,'recovery.py'),
-                    'advise','--root',root,'--job',job['id'],'--packet',packet_path,'--out',decision_path],
+                flow.command('执行固定恢复策略',progress,progress,[flow.asr_py,'-B',script(root,'recovery.py'),
+                    'decide','--root',root,'--job',job['id'],'--packet',packet_path,'--out',decision_path],
                     timeout=60,should_abort=is_cancelled,report_progress=False)
                 decision=read(decision_path)
                 record['decision']={k:decision.get(k) for k in
@@ -1434,6 +1661,8 @@ def translate_job(root,folder):
     except ProxyTransportError as error:
         emit_transport_failure(error.failure_metadata,event='proxy_stage_failure')
         raise
+    from translation_reuse import apply_prior_reviews
+    updated,report=apply_prior_reviews(root,folder,rows,updated,report)
     validate_translations(rows,updated,report)
     revision_path=folder/'source_plan_revision.json'
     if revision_path.is_file():

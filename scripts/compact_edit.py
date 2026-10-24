@@ -5,6 +5,7 @@ follow the returned EDL. Existing source media and timeline files are read only.
 """
 import argparse
 import fcntl
+import functools
 import hashlib
 import importlib.util
 import json
@@ -174,6 +175,48 @@ def _escape(text):
     return text.replace('\\','\\\u2060').replace('{',r'\{').replace('}',r'\}')
 
 
+@functools.lru_cache(maxsize=32)
+def _subtitle_font(font_path, size):
+    return ImageFont.truetype(font_path, size)
+
+
+def fit_subtitle_layout(text_zh, text_de, *, segment_id='', font_path=FONT):
+    """Fit one unchanged bilingual cue within the existing landscape safe box.
+
+    Prefer 34/24. For long cues try only integer Chinese sizes 34..30 and
+    source sizes 24..20, maximizing their sum (Chinese size breaks ties).
+    Line breaks are visual whitespace; every non-whitespace character remains
+    in its original order. This function changes no subtitle or audio timing.
+    """
+    if any(not isinstance(text,str) or not text.strip() for text in (text_zh,text_de)):
+        raise ValueError('Empty or invalid subtitle text: '+str(segment_id))
+    font_path=str(font_path)
+    wraps={}
+    for language,text,sizes in (('zh',text_zh,range(34,29,-1)),('de',text_de,range(24,19,-1))):
+        for size in sizes:
+            font=_subtitle_font(font_path,size)
+            lines=_wrap(text,font,language,900)
+            widths=[float(font.getlength(line)) for line in lines]
+            wraps[language,size]=(lines,widths,len(lines)*sum(font.getmetrics()))
+    pairs=sorted(((zh,de) for zh in range(34,29,-1) for de in range(24,19,-1)),
+                 key=lambda pair:(sum(pair),pair[0],pair[1]),reverse=True)
+    for zh_size,de_size in pairs:
+        zh,zh_widths,zh_height=wraps['zh',zh_size]
+        de,de_widths,de_height=wraps['de',de_size]
+        de_top=520-de_height;zh_bottom=de_top-10;zh_top=zh_bottom-zh_height
+        if (len(zh)>3 or len(de)>5 or zh_top<240
+                or any(width>900 for width in zh_widths+de_widths)):
+            continue
+        return {'zh_lines':zh,'de_lines':de,'font_sizes':{'zh':zh_size,'de':de_size},
+            'line_counts':{'zh':len(zh),'de':len(de)},
+            'line_widths_px':{'zh':zh_widths,'de':de_widths},
+            'zh_top_y':zh_top,'zh_bottom_y':zh_bottom,'de_top_y':de_top,'de_bottom_y':520,
+            'adjusted':(zh_size,de_size)!=(34,24) or len(zh)>2 or len(de)>4,
+            'max_width_px':900,'minimum_top_y':240,'language_gap_px':10,
+            'selection_policy':'maximum_font_size_sum_then_chinese_size_v1'}
+    raise ValueError('Subtitle cannot fit safe layout (Chinese 30+/3 lines, source 20+/5 lines): '+str(segment_id))
+
+
 def build_compact_ass(edl, output_path):
     if isinstance(edl,(str,Path)):edl=json.loads(Path(edl).read_text())
     fonts={'zh':ImageFont.truetype(FONT,34),'de':ImageFont.truetype(FONT,24)}
@@ -181,19 +224,19 @@ def build_compact_ass(edl, output_path):
     header=f'[Script Info]\nTitle: Landscape compact bilingual edit\nScriptType: v4.00+\nPlayResX: 960\nPlayResY: 540\nWrapStyle: 2\nScaledBorderAndShadow: yes\nYCbCr Matrix: TV.709\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Chinese,{family},34,&H00FFFFFF,&H00FFFFFF,&H00101010,&H90000000,0,0,0,0,100,100,0,0,1,2,1,2,30,30,20,1\nStyle: German,{family},24,&H00FFFFFF,&H00FFFFFF,&H00101010,&H90000000,0,0,0,0,100,100,0,0,1,2,1,2,30,30,20,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n'
     events=[];placements=[]
     for row in edl['utterances']:
-        zh=_wrap(row['text_zh'],fonts['zh'],'zh',900)
-        de=_wrap(row['text_de'],fonts['de'],'de',900)
-        if len(zh)>2 or len(de)>4:raise ValueError('Subtitle too tall: '+row['segment_id'])
-        de_height=len(de)*sum(fonts['de'].getmetrics())
-        zh_height=len(zh)*sum(fonts['zh'].getmetrics())
-        zh_bottom=520-de_height-10;zh_top=zh_bottom-zh_height
-        if zh_top<240:raise ValueError('Subtitle extends too far upward: '+row['segment_id'])
+        layout=fit_subtitle_layout(row['text_zh'],row['text_de'],segment_id=row['segment_id'])
+        zh,de=layout['zh_lines'],layout['de_lines']
+        zh_bottom,zh_top=layout['zh_bottom_y'],layout['zh_top_y']
         for lang,style,lines,bottom in [('zh','Chinese',zh,zh_bottom),('de','German',de,520)]:
             text=r'\N'.join(_escape(line) for line in lines)
-            position='{' + chr(92) + f'an2{chr(92)}pos(480,{bottom}){chr(92)}q2' + '}'
+            size=(chr(92)+'fs'+str(layout['font_sizes'][lang])) if layout['adjusted'] else ''
+            position='{' + chr(92) + f'an2{chr(92)}pos(480,{bottom}){chr(92)}q2' + size + '}'
             events.append(f'Dialogue: 0,{_stamp(row["output_start_s"])},{_stamp(row["output_end_s"])},{style},{row["segment_id"]},0,0,0,,{position}{text}')
         placements.append({'id':row['segment_id'],'zh_lines':len(zh),'de_lines':len(de),
-                           'zh_top_y':zh_top,'zh_bottom_y':zh_bottom,'de_bottom_y':520})
+            'zh_top_y':zh_top,'zh_bottom_y':zh_bottom,'de_top_y':layout['de_top_y'],'de_bottom_y':520,
+            'font_sizes':layout['font_sizes'],'zh_font_size':layout['font_sizes']['zh'],
+            'de_font_size':layout['font_sizes']['de'],'line_widths_px':layout['line_widths_px'],
+            'layout_adjusted':layout['adjusted']})
     target=Path(output_path);target.parent.mkdir(parents=True,exist_ok=True)
     target.write_text(header+'\n'.join(events)+'\n',encoding='utf-8')
     return {'file':str(target.resolve()),'events':len(events),'segments':len(placements),
