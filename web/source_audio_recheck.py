@@ -31,7 +31,7 @@ def slot_tail_end(row, rows, duration):
     slot = row.get('slot_end_s', end)
     following = min((r['start_s'] for r in rows if r['start_s'] > row['start_s']), default=duration)
     if (row.get('overlap') is False and type(slot) in (int, float)
-            and math.isfinite(slot) and end < slot <= min(end+.75, following, duration)):
+            and math.isfinite(slot) and end < slot <= min(end+.8, following, duration)):
         return slot
     return end
 
@@ -67,7 +67,7 @@ def exact_window_matches(proof, row, rows, duration):
             and row['end_s'] < end <= slot_tail_end(row, rows, duration)+1e-6)
 
 
-def recheck(root, folder, rows, evidence_dir, source_sha256):
+def recheck(root, folder, rows, evidence_dir, source_sha256, *, automatic_language=False):
     """Offer exact, locally recognized alternatives, never verified source words.
 
     A model-selected source must equal a complete alternative returned here.
@@ -188,11 +188,34 @@ def recheck(root, folder, rows, evidence_dir, source_sha256):
                 proofs.append(proof)
                 alternatives['exact']=text
                 decoding['hinted_candidate_used']=True
+        language_proposal = None
+        if automatic_language:
+            from source_language_consensus import detect_on_window
+            exact = next(p for p in proofs if p['kind'] == 'exact')
+            language_proposal = detect_on_window(root, folder, row, exact, model, model_path,
+                evidence_dir, source_sha256)
+            if language_proposal:
+                # Keep the old forced-language result. Only the complete real
+                # automatic observation becomes the selectable exact candidate.
+                exact['kind'] = 'previous_forced_language_exact'
+                proofs.append({**exact, 'kind': 'exact', 'full_text': language_proposal['candidate'],
+                    'bounded_text': language_proposal['candidate'], 'words': [],
+                    'source_language': language_proposal['language'],
+                    'automatic_language_evidence': language_proposal['language_evidence']})
+                alternatives['exact'] = language_proposal['candidate']
+                decoding.update(automatic_language_consensus=True,
+                    exact_source_language=language_proposal['language'],
+                    prior_source_language=row.get('source_language', 'de'))
         result[sid] = {'alternatives': alternatives, 'evidence': proofs, 'decoding':decoding,
                        'model_path': str(model_path.resolve()), 'model_sha256': model_hash,
                        'original_text_sha256': hashlib.sha256(row['text_de'].encode()).hexdigest(),
                        'input_source_sha256': source_sha256, 'source_words_verified': False,
                        'human_reviewed': False, 'method': 'local_cpu_asr_exact_and_contextual_windows_v1'}
+        if language_proposal:
+            result[sid]['language_proposal'] = language_proposal
+        if automatic_language and not language_proposal:
+            from source_fraction_consensus import attach
+            result[sid]=attach(root,folder,row,result[sid],evidence_dir,source_sha256)
         recovery._save(evidence_dir/(sid+'_source_recheck.json'), result[sid])
         print(json.dumps({'event': 'translation_source_recheck', 'segment_id': sid,
                           'completed': len(result), 'total': len(rows), 'human_reviewed': False}), flush=True)

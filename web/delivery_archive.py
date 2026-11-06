@@ -15,6 +15,11 @@ JID = re.compile(r'^web_\d{8}_\d{6}_[a-f0-9]{8}$')
 RESERVE = 8 * 1024**3
 
 
+def archive_reserve(job):
+    """Public builds retain the normal eight-GiB archive reserve."""
+    return RESERVE
+
+
 def sha(path):
     result = hashlib.sha256()
     with path.open('rb') as stream:
@@ -129,7 +134,11 @@ def archive_delivery(root, job, artifacts):
         version += 1
         target = base.with_name(base.name+'_'+fingerprint[:10]+('' if version == 1 else '_'+str(version)))
     needed = sum(item['bytes'] for item in entries)
-    if shutil.disk_usage(root).free < RESERVE + needed + 1024**2:
+    reserve = archive_reserve(job)
+    storage = {'free_bytes':shutil.disk_usage(root).free, 'reserve_bytes':reserve,
+        'archive_copy_bytes':needed, 'required_free_bytes':reserve + needed + 1024**2}
+    save(safe_path(folder/'archive_space_preflight.json', folder), storage)
+    if storage['free_bytes'] < storage['required_free_bytes']:
         raise RuntimeError('成片已生成，但归档空间不足；原任务视频和字幕均保留')
     staging = Path(tempfile.mkdtemp(prefix='.delivery_', dir=archive_root))
     try:
@@ -142,7 +151,7 @@ def archive_delivery(root, job, artifacts):
                 raise RuntimeError('成片复制校验失败，原任务文件保留')
         result = {'schema':SCHEMA, 'fingerprint':fingerprint, **identity, 'directory':str(target),
             'archived_at':datetime.now(timezone.utc).isoformat(), 'originals_preserved':True,
-            'human_reviewed':False, 'listening_approved':False}
+            'human_reviewed':False, 'listening_approved':False, 'storage_preflight':storage}
         save(staging/'归档记录.json', result)
         staging.rename(target)
         save(receipt_path, result)

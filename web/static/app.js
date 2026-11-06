@@ -571,14 +571,15 @@
         const actual = displayError(job.error);
         if (actual && !explanation.includes(actual)) explanation += " " + actual;
       }
-      const checkLabels = new Set(["数字", "单位", "否定", "条件", "比例", "专名", "原文识别", "独立二审"]);
+      const checkLabels = new Set(["数字", "单位", "否定", "条件", "比例", "专名", "原文识别", "独立二审", "参考声音"]);
       const positions = Array.isArray(failure?.source_windows) ? failure.source_windows.slice(0, 8)
         .filter((item) => Number.isFinite(item?.start_s) && Number.isFinite(item?.end_s)
           && item.start_s >= 0 && item.end_s >= item.start_s && item.end_s <= 172800)
         .map((item) => {
           const stamp = (value) => Math.floor(value / 60) + "分" + String(Math.floor(value % 60)).padStart(2, "0") + "秒";
-          const row = typeof item.id === "string" && /^line\d{4,}$/.test(item.id)
-            ? "第" + Number(item.id.slice(4)) + "句" : "";
+          const row = typeof item.speaker_id === "string" && /^S\d{2,}$/.test(item.speaker_id)
+            ? "人物 " + item.speaker_id : typeof item.id === "string" && /^line\d{4,}$/.test(item.id)
+              ? "第" + Number(item.id.slice(4)) + "句" : "";
           const labels = Array.isArray(item.checks) ? item.checks.filter((label) => checkLabels.has(label)) : [];
           return row + (labels.length ? "（" + labels.join("、") + "）" : "")
             + " " + stamp(item.start_s) + "–" + stamp(item.end_s);

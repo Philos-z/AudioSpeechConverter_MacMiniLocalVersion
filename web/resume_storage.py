@@ -128,8 +128,9 @@ def cleanup_candidates(*,job_path,source_sha256,stages,temporary_files):
 
 
 def preflight(source_duration_s,free_bytes,*,job_path,source_sha256,stages=None,
-              speech_duration_s=None,source_rows=None,intro_s=0.,planned_output_duration_s=None):
-    """Return a conservative resume estimate without changing the 8/2GiB floors.
+              speech_duration_s=None,source_rows=None,intro_s=0.,planned_output_duration_s=None,
+              reserve_gib=8.):
+    """Keep the caller's existing 8/2GiB policy and the 2GiB runtime floor.
 
     If no upstream stage can be reused, retain the original rounded cold peak.
     Reuse credits are fixed producer budgets, never sums of existing file sizes.
@@ -137,6 +138,9 @@ def preflight(source_duration_s,free_bytes,*,job_path,source_sha256,stages=None,
     verified stage is skipped, while retaining every future render/mix cost.
     """
     source=_positive(source_duration_s,'视频时长')
+    _positive(reserve_gib,'空间安全余量')
+    if reserve_gib not in (2,8):raise ValueError('仅支持既有2GiB或8GiB空间政策')
+    reserve=math.ceil(reserve_gib*GIB)
     if type(free_bytes) is not int or free_bytes<0:raise ValueError('可用空间无效')
     if not isinstance(source_sha256,str) or SHA.fullmatch(source_sha256) is None:raise ValueError('原片身份无效')
     _job_path(job_path)
@@ -152,9 +156,9 @@ def preflight(source_duration_s,free_bytes,*,job_path,source_sha256,stages=None,
     component_peak=sum(future.values())+sum(upstream.values())+FIXED_MARGIN_BYTES
     cold_peak=math.ceil(max(source,duration)*4*1024**2)+FIXED_MARGIN_BYTES
     peak=component_peak if any(reused.values()) else max(cold_peak,component_peak)
-    required=RESERVE_BYTES+peak;sufficient=free_bytes>=required
+    required=reserve+peak;sufficient=free_bytes>=required
     result={'schema':SCHEMA,'source_duration_s':source,'storage_duration_bound_s':duration,
-        'free_bytes':free_bytes,'protected_reserve_bytes':RESERVE_BYTES,
+        'free_bytes':free_bytes,'protected_reserve_bytes':reserve,
         'runtime_hard_floor_bytes':RUNTIME_HARD_FLOOR_BYTES,'fixed_margin_bytes':FIXED_MARGIN_BYTES,
         'future_components_bytes':future,'remaining_upstream_components_bytes':upstream,
         'verified_reusable_stages':[stage for stage,valid in reused.items() if valid],
@@ -167,7 +171,7 @@ def preflight(source_duration_s,free_bytes,*,job_path,source_sha256,stages=None,
         'renderer_accounting':'group_mix_4wav_48k_stereo_plus_3_encoded_copies_plus_native_aac_plus_256mib_scratch_v1'}
     if not sufficient:
         result['message']=(f'空间不足：当前可用{free_bytes/GIB:.2f} GiB，断点续跑预计新增峰值{peak/GIB:.2f} GiB，'
-            f'另保留8.00 GiB安全余量；还需{(required-free_bytes)/GIB:.2f} GiB。已有素材保留。')
+            f'另保留{reserve/GIB:.2f} GiB安全余量；还需{(required-free_bytes)/GIB:.2f} GiB。已有素材保留。')
     return result
 
 

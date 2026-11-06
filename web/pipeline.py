@@ -26,6 +26,28 @@ from urllib.parse import urlparse
 from source_language import normalize_language, language_label, source_language_metadata
 
 VERSION='local_web_natural_pipeline_v1'
+
+
+def proxy_retry_backoff(flow, attempt):
+    """Let an evidenced temporary outage recover within existing retry rights."""
+    if getattr(flow,'options',{}).get('autonomy_policy') != 'evidence_first_v1':
+        return
+    delays={1:10.,2:30.}
+    if type(attempt) is not int or attempt not in delays:
+        raise ValueError('临时连接重试编号不合法')
+    duration=delays[attempt]
+    flow.check()
+    flow.emit('连接暂忙，等待后自动继续',flow.progress,
+        {'retry_attempt':attempt,'wait_seconds':duration,'new_retry_budget_granted':False})
+    until=time.perf_counter()+duration
+    while True:
+        flow.check()
+        remaining=until-time.perf_counter()
+        if remaining<=0:
+            break
+        time.sleep(min(.2,remaining))
+
+
 DEFAULT_TTS_PROFILE='hybrid-gpt-preserve-25-pad-eager'
 DEFAULT_TTS_GROUPING='semantic_groups_v1'
 DEFAULT_MASTERING_POLICY='constant_if_safe_v1'
@@ -59,6 +81,21 @@ class WebsiteRepairReady(RuntimeError):
     def __init__(self,action,details):
         super().__init__('网站已保存局部恢复数据，将从断点继续')
         self.action=action;self.details=details
+
+
+class AudioContentReviewRequired(RuntimeError):
+    """Current complete mixed audio remains uncertain after its fixed fallback."""
+    def __init__(self,message,failure_metadata):
+        super().__init__(message)
+        self.failure_metadata=dict(failure_metadata)
+
+
+def current_audio_content_review_error(root,folder,plan_path,manifest_path,quality_path):
+    """Construct the bound error without generating audio or changing task data."""
+    from failure_triage import audio_content_review_metadata
+    metadata=audio_content_review_metadata(root,folder,quality_path,plan_path,manifest_path)
+    return AudioContentReviewRequired(
+        '完整配音内容仍未确认；已保留两版声音、完整译稿和识别证据，需集中试听决定后继续。',metadata)
 
 
 def implementation_signature(names,source_path=None):
@@ -256,6 +293,67 @@ def geometry(probe):
     return {'width':960,'height':540,'fps':25,'preserve_source_orientation':True}
 
 
+def _reviewed_row_language_exception(folder,before,row,change,source_sha256):
+    """Bind one machine language correction to its real local detection proof."""
+    if not isinstance(row.get('text_de'),str) or not row['text_de'].strip():
+        raise ValueError('逐行语言修订原文不完整')
+    original=normalize_language(before.get('source_language','de'),allow_auto=False)
+    replacement=normalize_language(row.get('source_language',original),allow_auto=False)
+    if replacement==original:return None
+    if row.get('source_language')!=replacement:
+        raise ValueError('逐行语言修订必须使用规范语言代码')
+    if (change.get('original_source_language')!=original
+            or change.get('replacement_source_language')!=replacement):
+        raise ValueError('逐行语言修订缺少明确原语言与替换语言')
+    proof=change.get('language_evidence')
+    def evidence_file(record):
+        if (not isinstance(record,dict) or set(record)!={'path','sha256'}
+                or not isinstance(record['path'],str) or not re.fullmatch(r'[0-9a-f]{64}',str(record['sha256']))):
+            raise ValueError('逐行语言证据引用不完整')
+        path=folder/record['path'];actual=path.resolve()
+        if (path.is_symlink() or not actual.is_relative_to(folder/'revisions/source_review_v1/evidence')
+                or not actual.is_file() or digest(actual)!=record['sha256']):
+            raise ValueError('逐行语言证据位置或哈希不符')
+        return actual
+    path=evidence_file(proof);record=read(path)
+    from proxy_client import source_binding
+    if (not isinstance(record,dict) or record.get('schema')!='machine_row_language_evidence_v1'
+            or record.get('segment_id')!=before['segment_id']
+            or record.get('input_source_sha256')!=source_sha256
+            or record.get('source_binding')!=source_binding(before)
+            or record.get('original_source_language')!=original
+            or record.get('detected_source_language')!=replacement
+            or record.get('replacement_text_sha256')!=hashlib.sha256(row['text_de'].encode()).hexdigest()
+            or record.get('human_reviewed') is not False or record.get('source_words_verified') is not False):
+        raise ValueError('逐行语言检测与原片、原句或替换原文绑定不符')
+    detection=record.get('detection');audio=detection.get('audio') if isinstance(detection,dict) else None
+    probability=detection.get('language_probability') if isinstance(detection,dict) else None
+    if (not isinstance(detection,dict) or detection.get('mode')!='auto'
+            or detection.get('forced_language') is not None
+            or detection.get('language')!=replacement
+            or type(probability) not in (int,float) or not math.isfinite(probability) or not 0<=probability<=1
+            or not isinstance(detection.get('model'),str) or not 1<=len(detection['model'])<=160
+            or not isinstance(audio,dict)):
+        raise ValueError('逐行语言必须有真实自动检测记录，强制转写不等于语言检测')
+    for component in (detection,record.get('transcription')):
+        if isinstance(component,dict) and 'report' in component:evidence_file(component['report'])
+    evidence_file({key:audio.get(key) for key in ('path','sha256')})
+    start,end=audio.get('start_s'),audio.get('end_s')
+    if (type(start) not in (int,float) or type(end) not in (int,float)
+            or not math.isfinite(start) or not math.isfinite(end)
+            or not 0<=start<=before['start_s']<before['end_s']<=end
+            or before['start_s']-start>1 or end-before['end_s']>1):
+        raise ValueError('逐行语言检测音窗未绑定当前完整原句')
+    if record.get('method')=='automatic_dual_cpu_language_v1':
+        from source_language_consensus import verify_committed_language_evidence
+        verified=verify_committed_language_evidence(folder.parent.parent,folder,before,row,proof,source_sha256)
+        if verified!=replacement:raise ValueError('自动语言复核未通过双模型与当前派生源计划校验')
+    return {'validator':'reviewed_source_plan_language_v1',
+        'original_source_language':original,'replacement_source_language':replacement,
+        'source_binding':source_binding(row),'input_source_sha256':source_sha256,
+        'language_evidence':dict(proof),'human_reviewed':False,'source_words_verified':False}
+
+
 def reviewed_source_plan(folder,original_plan,source_sha256):
     """Apply an evidence-bound derived plan, keeping all original files intact."""
     folder=Path(folder).resolve();original_plan=Path(original_plan)
@@ -287,32 +385,96 @@ def reviewed_source_plan(folder,original_plan,source_sha256):
         change_map[sid]=change
     expected=[r['segment_id'] for r in original if change_map.get(r['segment_id'],{}).get('action')!='exclude_asr_duplicate']
     if [r['segment_id'] for r in revised]!=expected:raise ValueError('源文修订改变了未授权的台词顺序或编号')
+    language_exceptions={}
     for row in revised:
         sid=row['segment_id'];before=by_id[sid];change=change_map.get(sid)
         if change:
+            language_exception=_reviewed_row_language_exception(folder,before,row,change,source_sha256)
+            allowed={'text_de','text_source'}|({'source_language'} if language_exception else set())
             if (not isinstance(row.get('text_de'),str) or not row['text_de'].strip()
                     or row.get('text_source')!=row['text_de']
                     or change.get('replacement_text_sha256')!=hashlib.sha256(row['text_de'].encode()).hexdigest()
-                    or {k:v for k,v in row.items() if k not in {'text_de','text_source'}}
-                        !={k:v for k,v in before.items() if k not in {'text_de','text_source'}}):
+                    or {k:v for k,v in row.items() if k not in allowed}
+                        !={k:v for k,v in before.items() if k not in allowed}):
                 raise ValueError('源文修订改变了时间、人物或未批准字段')
+            if language_exception:language_exceptions[sid]=language_exception
         elif row!=before:raise ValueError('源文修订改变了未列入修订的台词')
     return revised,{'receipt':str(receipt),'receipt_sha256':digest(receipt),
         'original_rows':len(original),'derived_rows':len(revised),'changes':len(changes),
         'original_asr_and_plan_preserved':True,'unresolved':revision.get('unresolved',[]),
-        'blocking_unresolved':revision.get('blocking_unresolved',[])}
+        'blocking_unresolved':revision.get('blocking_unresolved',[]),'language_exceptions':language_exceptions}
 
 
-def validate_translations(before,after,report):
+def validate_translations(before,after,report,folder=None):
     if len(before)!=len(after) or len({r['segment_id'] for r in after})!=len(before):raise RuntimeError('机器译稿编号或条数不完整')
-    if report.get('human_reviewed') is not False or report.get('review_method')!='two_pass_machine_review_and_numeric_invariants':
+    method=report.get('review_method');adoptions={};saved_targets={}
+    if report.get('human_reviewed') is not False or method not in (
+            'two_pass_machine_review_and_numeric_invariants','machine_two_pass_plus_user_context_adoption',
+            'machine_two_pass_plus_saved_independent_receipts',
+            'machine_two_pass_plus_saved_independent_receipts_and_user_context_adoption',
+            'machine_two_pass_plus_user_editorial_omission',
+            'machine_two_pass_plus_saved_independent_receipts_and_user_editorial_omission',
+            'machine_two_pass_plus_authorized_editorial_decisions',
+            'machine_two_pass_plus_saved_independent_receipts_and_authorized_editorial_decisions'):
         raise RuntimeError('译稿没有实际机器二审及数字检查记录')
+    if folder is not None:
+        from user_context_adoption import load_adoptions
+        supplied=load_adoptions(Path(folder).parent.parent,Path(folder),before)
+        ids={row['segment_id'] for row in before}
+        adoptions={sid:record for sid,record in supplied.items() if sid in ids}
+        from committed_review_targets import load_targets
+        saved_targets=load_targets(Path(folder).parent.parent,Path(folder),before)
+    editorial={sid:r for sid,r in adoptions.items() if r['review_method']=='user_editorial_omission'}
+    revisions={sid:r for sid,r in adoptions.items() if r['review_method']=='user_editorial_revision'}
+    contextual={sid:r for sid,r in adoptions.items() if sid not in editorial and sid not in revisions}
+    if 'authorized_editorial_decisions' in str(method):
+        if (folder is None or not revisions or contextual
+                or report.get('user_editorial_omissions',{})!=editorial
+                or report.get('user_editorial_omitted_rows',0)!=len(editorial)
+                or report.get('user_editorial_revisions')!=revisions
+                or report.get('user_editorial_revised_rows')!=len(revisions)
+                or report.get('proxy_reviewed_rows')!=len(before)-len(editorial)-len(revisions)
+                or report.get('user_context_adoptions') or report.get('user_context_adopted_rows')):
+            raise RuntimeError('助手修订报告未区分真实机器批准与用户授权编辑')
+    elif revisions or report.get('user_editorial_revisions'):
+        raise RuntimeError('助手修订不能标为机器双审、用户全文采纳或部分转译一致性批准')
+    elif 'user_editorial_omission' in str(method):
+        if (folder is None or not editorial or contextual or report.get('user_editorial_omissions')!=editorial
+                or report.get('user_editorial_omitted_rows')!=len(editorial)
+                or report.get('proxy_reviewed_rows')!=len(before)-len(editorial)
+                or report.get('user_context_adoptions') or report.get('user_context_adopted_rows')):
+            raise RuntimeError('编辑删减报告未准确绑定真实授权及单独来源')
+    elif editorial or report.get('user_editorial_omissions'):
+        raise RuntimeError('授权删减不能标为全文采纳或机器二审')
+    elif method in ('machine_two_pass_plus_user_context_adoption',
+            'machine_two_pass_plus_saved_independent_receipts_and_user_context_adoption'):
+        if folder is None:raise RuntimeError('用户语境采纳必须读取实际任务决策')
+        if (not adoptions or report.get('user_context_adoptions')!=adoptions
+                or report.get('proxy_reviewed_rows')!=len(before)-len(adoptions)
+                or report.get('user_context_adopted_rows')!=len(adoptions)):
+            raise RuntimeError('用户语境采纳报告没有绑定真实单行决策')
+    elif contextual or report.get('user_context_adoptions'):
+        raise RuntimeError('用户采纳不能标为纯机器二审')
+    if 'saved_independent_receipts' in str(method):
+        if (folder is None or not saved_targets or report.get('saved_independent_receipts')!=saved_targets
+                or report.get('saved_independent_receipt_rows')!=len(saved_targets)
+                or report.get('saved_receipt_additional_proxy_calls')!=0):
+            raise RuntimeError('既有双审复用没有绑定真实提交收据')
+    elif saved_targets or report.get('saved_independent_receipts'):
+        raise RuntimeError('既有双审复用不能标为本次普通翻译二审')
     source={r['segment_id']:r for r in before}
+    primary=normalize_language(report.get('source_language','de'),allow_auto=False)
+    expected_languages={r['segment_id']:normalize_language(r.get('source_language',primary),allow_auto=False) for r in before}
+    mixed=any(language!=primary for language in expected_languages.values())
+    has_language_map='source_language_by_segment' in report or 'source_languages' in report
+    if (mixed or has_language_map) and (report.get('source_language_by_segment')!=expected_languages
+            or report.get('source_languages')!=sorted(set(expected_languages.values()))):
+        raise RuntimeError('译稿逐行源语言审校绑定不完整或不一致')
     for original in before:
         if 'text_source' in original and original['text_source']!=original['text_de']:
             raise RuntimeError('原文兼容字段内容不一致')
         language=original.get('source_language')
-        if language and report.get('source_language', 'de' if language=='de' else None)!=language:
+        if language and not has_language_map and report.get('source_language', 'de' if language=='de' else None)!=language:
             raise RuntimeError('译稿审校语言与实际原文不一致')
     for row in after:
         original=source.get(row['segment_id'])
@@ -323,9 +485,50 @@ def validate_translations(before,after,report):
                 or ('text_source' in row and row['text_source']!=row['text_de'])):
             raise RuntimeError('机器译稿改变了原文或源语言字段')
         if (not isinstance(row.get('text_zh'),str) or not row['text_zh'].strip()
-                or row.get('translation_reviewed') is not True or row.get('human_reviewed') is not False
-                or row.get('translation_review_method')!='proxy_second_pass_and_numeric_checks'):
+                or row.get('translation_reviewed') is not True or row.get('human_reviewed') is not False):
             raise RuntimeError('机器译稿未通过可核验的第二遍审校')
+        adopted=adoptions.get(row['segment_id'])
+        if adopted:
+            from proxy_client import source_binding,invariants
+            from website_recovery import _guard_context
+            from translation_constraints import adoption_invariant_errors
+            if (row.get('translation_review_method')!=adopted['review_method']
+                    or row.get('translation_model') is not None or row.get('decision_ref')!=adopted['decision_ref']
+                    or row.get('text_zh')!=adopted['text_zh'] or source_binding(original)!=adopted['source_binding']
+                    or any(row.get(name) is not False for name in ('proxy_approved','source_words_verified','human_listened'))
+                    or row.get('join_previous') is not False
+                    or adoption_invariant_errors(folder,original,row['text_zh'],adopted,
+                        previous_context=_guard_context(before,before.index(original)))):
+                raise RuntimeError('用户语境采纳的实际源句、中文或独立出处不一致')
+            if adopted['review_method']=='user_editorial_omission' and (
+                    row.get('user_context_adopted') is not False or row.get('user_exact_target_confirmed') is not False
+                    or row.get('source_facts_complete') is not False
+                    or row.get('target_selected_by')!=adopted['target_selected_by']
+                    or row.get('omitted_source_span')!=adopted['omitted_source_span']):
+                raise RuntimeError('编辑删减不能标成用户确认全文或完整翻译')
+            if adopted['review_method']=='user_editorial_revision' and (
+                    row.get('user_context_adopted') is not False or row.get('user_exact_target_confirmed') is not False
+                    or row.get('source_facts_complete') is not False
+                    or row.get('target_selected_by')!=adopted['target_selected_by']
+                    or row.get('editorial_revision_note')!=adopted['editorial_revision_note']):
+                raise RuntimeError('助手修订不能伪装成已确认全文或机器批准')
+        elif row['segment_id'] in saved_targets:
+            saved=saved_targets[row['segment_id']]
+            from proxy_client import source_binding
+            if (row.get('translation_review_method')!=saved['review_method']
+                    or row.get('text_zh')!=saved['text_zh'] or source_binding(row)!=saved['source_binding']
+                    or row.get('translation_model')!=saved['model']
+                    or row.get('translation_receipt_ref')!=saved['receipt_ref']
+                    or row.get('new_translation_review_performed') is not False
+                    or row.get('proxy_approved') is not True
+                    or any(row.get(flag) is not False for flag in ('human_listened','source_words_verified'))
+                    or row.get('join_previous') is not False):
+                raise RuntimeError('既有双审复用的实际全文、来源或模型不符')
+        elif row.get('translation_review_method')!='proxy_second_pass_and_numeric_checks':
+            raise RuntimeError('未采纳句仍须实际Proxy第二遍审校')
+    if folder is not None:
+        from translation_constraints import validate_approved_targets
+        validate_approved_targets(after,folder)
 
 
 def infer_groups(rows):
@@ -509,6 +712,8 @@ class Flow:
         self.name=job['id']
         if not re.fullmatch(r'web_[A-Za-z0-9_-]{1,54}',self.name):raise ValueError('无效的新任务编号')
         self.folder=self.root/'jobs'/self.name;self.options=job.get('options') or {};self.progress=0
+        from portable_private_hooks import check_context
+        check_context(self.folder)
         self.metrics={'version':VERSION,'stage_wall_s':{},'stage_cache_hits':[], 'human_reviewed':False}
         self.warnings=['机器译配草稿，尚未经过人工试听。素材改编和声音使用授权状态未知，未标记为已授权。',
             '说话人是声学分组；Demucs可能残留原对白或分离伪影。']
@@ -548,7 +753,9 @@ class Flow:
             check_command()
             if on_line:on_line(text)
         owned_translation=([str(x) for x in argv]==[str(x) for x in self.internal('_translate')]
-            or tuple(str(x) for x in argv)==self._owned_website_text_argv)
+            or tuple(str(x) for x in argv)==self._owned_website_text_argv
+            or [str(x) for x in argv]==[str(self.asr_py),'-B',str(script(self.root,'autonomous_content_review.py')),
+                '--root',str(self.root),'--job',self.name])
         nonce=secrets.token_hex(32) if owned_translation else None
         observed=[];confirmed=[]
         original_line=line
@@ -678,6 +885,34 @@ class Flow:
         return changed
     def media_recovery(self):
         return __import__('media_recovery')
+    def review_whole_script(self, planned):
+        """An independent complete-input review runs before any TTS model."""
+        if self.options.get('autonomous_content_review') is not True:
+            return
+        from autonomous_content_review import verify_report, REPORT
+        rows=read(self.folder/'segments.json')['segments']
+        def result_ready():
+            report=verify_report(self.root,self.folder,rows)
+            return report.get('status')=='rejected'
+        def progress(text):
+            try:event=json.loads(text)
+            except (ValueError,TypeError):return
+            if event.get('event')=='autonomous_content_review_progress':
+                self.emit('整稿独立内容终审',58,{'completed_batches':event['completed_batches'],
+                    'total_batches':event['total_batches'],'human_reviewed':False})
+        self.command('整稿独立内容终审',58,58,[self.asr_py,'-B',script(self.root,'autonomous_content_review.py'),
+            '--root',self.root,'--job',self.name],on_line=progress,review_exit=result_ready,timeout=3600)
+        checked=verify_report(self.root,self.folder,rows)
+        self.metrics['autonomous_content_review']={'status':checked['status'],
+            'covered_rows':checked['covered_rows'],'pending_ids':list(checked['findings']),
+            'report':str(self.folder/REPORT),'report_sha256':digest(self.folder/REPORT),
+            'user_adoptions_reapproved':False,'human_listened':False}
+        if checked['status']=='rejected':
+            ids=list(checked['findings'])
+            if self.website_policy['enabled'] and self.website_policy['source_mode']=='contextual':
+                if self.text_repair('translation',ids=ids[:8]):
+                    raise WebsiteRepairReady('whole_script_content_recovery',{'affected_count':min(8,len(ids))})
+            raise RuntimeError('整稿终审仍有实质内容疑点，已保留完整译稿和证据：'+','.join(ids))
     def align_group_subtitles(self,group_plan,stable_manifest,align_dir):
         alignment_index=align_dir/'alignment_manifest.json'
         def review_exit():
@@ -694,9 +929,11 @@ class Flow:
             else float(config.get('minimum_free_gib',8)))
     def current_space_preflight(self,config,source,source_sha,prepare_signature,planned_output_duration_s=None):
         """Credit only producer stages that will pass the current cache check."""
-        if self.space_reserve(config)!=8:
+        reserve_gib=self.space_reserve(config)
+        # Preserve the legacy cold estimate for unrelated custom configurations.
+        if reserve_gib not in (2,8):
             return space_preflight(max(source['duration_s'],planned_output_duration_s or 0),
-                shutil.disk_usage(self.root).free,self.space_reserve(config))
+                shutil.disk_usage(self.root).free,reserve_gib)
         from resume_storage import preflight,cleanup_candidates,REQUIRED_OUTPUTS,BACKGROUND_TEMPORARIES
         stages={}
         def proof(name,signature):
@@ -729,7 +966,7 @@ class Flow:
         def estimate():
             return preflight(float(source['duration_s']),shutil.disk_usage(self.root).free,
                 job_path=str(self.folder),source_sha256=source_sha,stages=stages,
-                planned_output_duration_s=planned_output_duration_s)
+                planned_output_duration_s=planned_output_duration_s,reserve_gib=reserve_gib)
         def temporary(path):
             if not path.is_file() or any(p.is_symlink() for p in (path,*path.parents)):return None
             observed=path.stat();sha=digest(path)
@@ -758,7 +995,7 @@ class Flow:
                 receipt=self.folder/'recovery/storage_cleanup'/(str(time.time_ns())+'.json')
                 record={'schema':'verified_background_scratch_cleanup_v1','source_sha256':source_sha,
                     'before':result,'candidates':candidates,'removed':[],'status':'checking',
-                    'old_assets_deleted':False,'protected_reserve_bytes':8*1024**3}
+                    'old_assets_deleted':False,'protected_reserve_bytes':result['protected_reserve_bytes']}
                 save(receipt,record)
                 for candidate in candidates:
                     self.check();refresh()
@@ -844,6 +1081,7 @@ class Flow:
             source.update(metadata);save(source_json,source)
             self.remember('prepare',prepare_signature,[source_json,self.folder/'audio/original.wav',self.folder/'audio/asr16k.wav'])
         plan=self.folder/'segments.plan.json';speaker_signature={'asr_sha':digest(asr),'vocals_sha':digest(self.folder/'separated/htdemucs/original/vocals.wav'),'code':digest(script(self.root,'speaker_plan.py')),
+            'reference_helper_sha256':digest(script(self.root,'speaker_references.py')),
             'sentence_regroup':'raw_assignments_sentence24_v1','regroup_code':speaker_implementation_signature()}
         correction=self.folder/'speaker_corrections.json'
         if correction.is_file():
@@ -891,16 +1129,18 @@ class Flow:
             'prior_review_reuse_sha256':digest(self.folder/'translation/prior_review_reuse.json') if (self.folder/'translation/prior_review_reuse.json').is_file() else None,
             'prior_review_reuse_code':digest(Path(__file__).with_name('translation_reuse.py')) if (self.folder/'translation/prior_review_reuse.json').is_file() else None,
             'source_plan_revision_sha256':digest(self.folder/'source_plan_revision.json') if (self.folder/'source_plan_revision.json').is_file() else None,
-            'source_language':actual_language,'proxy_client_code':digest(Path(__file__).with_name('proxy_client.py')),'method':'actual_two_pass_numeric_checks'}
+            'source_language':actual_language,'proxy_client_code':digest(Path(__file__).with_name('proxy_client.py')),
+            'committed_review_targets_code':digest(Path(__file__).with_name('committed_review_targets.py')),
+            'method':'actual_two_pass_numeric_checks'}
         if not self.cached('translation',tsig,[]):
             def tr_line(text):
                 try:event=json.loads(text)
                 except (ValueError,TypeError):return
                 if event.get('event')=='translation_progress':self.emit('机器翻译与第二遍审校',46+12*event['completed']/max(1,event['total']),{'completed':event['completed'],'total':event['total'],'human_reviewed':False})
             self.translate_with_recovery(planned,tr_line)
-            validate_translations(planned,read(translated)['segments'],read(translation_report))
+            validate_translations(planned,read(translated)['segments'],read(translation_report),folder=self.folder)
             self.remember('translation',tsig,[translated,translation_report])
-        validate_translations(planned,read(translated)['segments'],read(translation_report))
+        validate_translations(planned,read(translated)['segments'],read(translation_report),folder=self.folder)
         from translation_recovery import source_pending
         source_rechecks=source_pending(self.folder,planned)
         if source_rechecks:
@@ -908,12 +1148,14 @@ class Flow:
                 if self.text_repair('translation',ids=source_rechecks[:8]):
                     raise WebsiteRepairReady('source_recheck_before_tts',{'affected_count':min(8,len(source_rechecks))})
             raise RuntimeError('原文识别疑点仍待复核，未启动配音：'+','.join(source_rechecks))
+        self.review_whole_script(planned)
         if previous_group_plan and self.website_policy['enabled']:
             self.media_recovery().rebind_no_join(self.root,self.folder,previous_group_plan)
         if source_revision and source_revision['blocking_unresolved']:
             raise RuntimeError('机器译稿已保存；原文词义仍待核对：'+','.join(source_revision['blocking_unresolved'])+
                 '。未启动配音或最终导出，不能标记为最终完成。')
         rows=read(translated)['segments']
+        validate_translations(planned,rows,read(translation_report),folder=self.folder)
         subtitle_preflight=self.folder/'subtitle_preflight.json'
         layout_signature={'segments':digest(translated),'renderer':digest(self.root/'scripts/compact_edit.py'),
             'checker':digest(script(self.root,'subtitle_preflight.py'))}
@@ -961,6 +1203,11 @@ class Flow:
         # Publish complete original groups during this same runner lifetime.
         # This creates no additional synthesis, model load, cut or join.
         pilot=None;pilot_done=False;pilot_payload=None
+        import native_generation_recovery_20261105 as generation_recovery
+        if grouped and generation_recovery.enabled(self.root,self.folder):
+            pilot_limit=0
+            self.metrics['early_voice_pilot']={'enabled':False,'historical_pilot_preserved':True,
+                'reason':'source_bound_generation_failure_composition','human_reviewed':False}
         old_pilot=self.folder/'outputs/voice_pilot/pilot_receipt.json'
         if pilot_limit and grouped and old_pilot.is_file():
             published=read(old_pilot)
@@ -1009,7 +1256,18 @@ class Flow:
         tts_argv=[self.mlx_py,'-B',script(self.root,'mlx_tts.py'),'--root',self.root,'--job',tts_job,
             '--output',native_out,'--max-segments',len(tts_rows),'--experimental-profile',profile,'--emotion-mode',emotion]
         if grouped:tts_argv.extend(['--cache-dir',planned_groups['tts_job']['cache_dir']])
-        self.command('生成中文配音草稿',61,79,tts_argv,on_line=tts_line)
+        import native_generation_recovery_20261105 as generation_recovery
+        if grouped and generation_recovery.enabled(self.root,self.folder):
+            if pilot is not None:raise RuntimeError('生成故障恢复不能复用早期试听发布流程')
+            request=generation_recovery.prepare(self.root,self.folder,group_plan,native_manifest)
+            for backend in ('native','torch'):
+                argv=generation_recovery.launch(self.root,self.folder,group_plan,request,backend)
+                if argv is not None:
+                    self.command('继续中文配音' if backend=='native' else '稳定回退生成失败段配音',
+                        61,79,argv,on_line=tts_line if backend=='native' else None)
+            native_manifest=generation_recovery.finish(self.root,self.folder,group_plan,request)
+        else:
+            self.command('生成中文配音草稿',61,79,tts_argv,on_line=tts_line)
         manifest=read(native_manifest)
         publish_pilot()
         if pilot_payload is not None:
@@ -1030,6 +1288,8 @@ class Flow:
             import acoustic_fallback
             base_stable_manifest=stable_group_manifest(self.folder,native_manifest)
             export_manifest=acoustic_fallback.resolve(self.root,self.folder,group_plan,base_stable_manifest)
+            import user_voice_adoption_20261103 as user_voice
+            export_manifest=user_voice.resolve(self.root,self.folder,group_plan,export_manifest)
         if export_manifest!=native_manifest:manifest=read(export_manifest)
         adapter=script(self.root,'group_compact_adapter.py' if grouped else 'natural_compact_adapter.py')
         export_dependencies={'mastering':mastering_signature(self.root,adapter,mastering),
@@ -1055,7 +1315,13 @@ class Flow:
             stable_manifest=stable_group_manifest(self.folder,export_manifest)
             # A second local repair must extend the existing immutable
             # composition, preserving any earlier successful Torch fallback.
-            repair_base=export_manifest if manifest.get('schema')==acoustic_fallback.COMPOSITION else base_stable_manifest
+            repair_base=export_manifest if manifest.get('schema') in (acoustic_fallback.COMPOSITION,user_voice.SCHEMA) else base_stable_manifest
+            if manifest.get('schema')==user_voice.SCHEMA:
+                export_identity['user_voice_adoption']=user_voice.validate_manifest(self.root,self.folder,group_plan,export_manifest)
+                export_identity['user_voice_adoption_reader']=digest(script(self.root,'user_voice_adoption_20261103.py'))
+                self.metrics['user_voice_adoption']={'decision':export_identity['user_voice_adoption'],
+                    'human_listened_scope':user_voice.IDS,'whole_video_human_reviewed':False,
+                    'new_synthesis_calls':0,'two_numeric_candidates_selected':True}
             if manifest.get('schema')==acoustic_fallback.COMPOSITION:
                 torch_groups=sum(row['content'].get('schema')=='continuous_utterance_v1'
                     for row in manifest['utterances'])
@@ -1076,10 +1342,23 @@ class Flow:
                         raise WebsiteRepairReady('compact_failed_speech',{'source_rows':ids[:8]})
                 raise RuntimeError('部分连续配音的字幕边界需核对；已保留全部台词和完整声音')
             if self.website_policy['enabled']:
-                quality=self.folder/'tts'/('audio_quality_'+key(group_manifest_identity(manifest))[:16]+'.json')
-                self.command('检查配音声学异常',81,81,[self.asr_py,'-B',script(self.root,'media_recovery.py'),
-                    'audio-quality','--root',self.root,'--plan',group_plan,'--manifest',repair_base,
-                    '--output',quality],timeout=1800)
+                quality_policy=self.options.get('speech_quality_policy','legacy_suspects_v1')
+                if quality_policy not in ('legacy_suspects_v1','layered_full_content_v1'):
+                    raise ValueError('无效的声音内容复核策略')
+                quality_identity={'manifest':group_manifest_identity(manifest),'policy':quality_policy,
+                    'checker':digest(script(self.root,'media_recovery.py'))}
+                if quality_policy=='layered_full_content_v1':
+                    quality_identity['content_checker']=digest(script(self.root,'speech_content_quality.py'))
+                quality=self.folder/'tts'/('audio_quality_'+key(quality_identity)[:16]+'.json')
+                # An exact existing-WAV user choice revalidates the complete
+                # saved PCM/ASR evidence without rewriting that historical report.
+                import user_voice_risk_20261106 as user_risk
+                saved_risk=user_risk.accept_quality(self.root,self.folder,group_plan,repair_base,
+                    quality,read(quality)) if quality.is_file() else None
+                if saved_risk is None:
+                    self.command('检查配音声学异常',81,81,[self.asr_py,'-B',script(self.root,'media_recovery.py'),
+                        'audio-quality','--root',self.root,'--plan',group_plan,'--manifest',repair_base,
+                        '--output',quality,'--policy',quality_policy],timeout=3600)
                 checked=read(quality)
                 if checked.get('complete') is not True:raise RuntimeError('配音声学检查尚未完成，已保留全部音频')
                 self.metrics['audio_quality']={k:checked[k] for k in checked if k not in {'rows','source_rows','flagged_groups'}}
@@ -1100,6 +1379,13 @@ class Flow:
                     repaired=acoustic_fallback.finish(self.root,self.folder,group_plan,
                         repair_base,quality,Path(request['fallback_manifest']))
                     raise WebsiteRepairReady('regenerate_failed_speech',repaired)
+                adoption=self.handle_unconfirmed_audio_quality(checked,group_plan,repair_base,quality,manifest)
+                if adoption is not None:export_identity['user_audio_uncertainty_resolution']=adoption
+                export_identity['speech_quality_policy']=quality_policy
+                export_identity['speech_quality_checker']=quality_identity
+                if self.options.get('autonomous_content_review') is True:
+                    from autonomous_content_review import REPORT
+                    export_identity['autonomous_content_review']=digest(self.folder/REPORT)
             export_identity.update(group_plan=digest(group_plan),alignment_index=digest(alignment_index))
             hold_policy=self.folder/'tts/picture_holds.json'
             export_identity['picture_holds']=digest(hold_policy) if hold_policy.is_file() else None
@@ -1328,6 +1614,37 @@ class Flow:
             'episode_count':total,'episodes':summaries,**source_language_metadata(actual),
             'warnings':self.warnings,'metrics':self.metrics,'human_reviewed':False,'status':'machine_reviewed_draft'}
 
+    def handle_unconfirmed_audio_quality(self,checked,group_plan,repair_base,quality,manifest):
+        """Stop a still-uncertain formal fallback; retain the native first try."""
+        unresolved=checked.get('needs_review_ids',[])
+        if not unresolved:return
+        if checked.get('needs_repair_ids'):
+            raise RuntimeError('声学硬检查尚未处理，不能改走未确认声音分支')
+        import user_voice_risk_20261106 as user_risk
+        adoption=user_risk.accept_quality(self.root,self.folder,group_plan,repair_base,quality,checked)
+        if adoption is not None:
+            self.metrics['user_audio_uncertainty_resolution']=adoption
+            return adoption
+        import user_voice_adoption_20261103 as user_voice
+        adoption=user_voice.accept_quality(self.root,self.folder,group_plan,repair_base,quality,checked)
+        if adoption is not None:
+            self.metrics['user_audio_uncertainty_resolution']=adoption
+            return adoption
+        pending_groups=set(checked.get('needs_review_groups',[]))
+        if any(row['segment_id'] in pending_groups
+                and row.get('content',{}).get('schema')=='continuous_utterance_v1'
+                for row in manifest['utterances']):
+            if checked!=read(quality):raise RuntimeError('当前完整配音检查证据已改变，未继续生成')
+            raise current_audio_content_review_error(self.root,self.folder,group_plan,repair_base,quality)
+        import acoustic_fallback
+        request=acoustic_fallback.prepare(self.root,self.folder,group_plan,
+            repair_base,quality,mode='unconfirmed_content')
+        self.command('尝试未确认句的完整备用配音',self.progress,self.progress,
+            request['argv'],timeout=1800)
+        repaired=acoustic_fallback.finish(self.root,self.folder,group_plan,
+            repair_base,quality,Path(request['fallback_manifest']),mode='unconfirmed_content')
+        raise WebsiteRepairReady('retry_uncertain_speech_same_text',repaired)
+
     def resolve_native_audio(self,native_manifest,grouped=False):
         """Resolve an explicit scoped receipt on CPU; retain actual TTS metrics."""
         selection=self.folder/'native_audio_selections.json'
@@ -1353,16 +1670,19 @@ class Flow:
         if self.job.get('input_path'):
             source=Path(self.job['input_path']).expanduser().resolve()
             if not source.is_file():raise RuntimeError('上传或指定的本地视频不存在')
+            if self.job.get('source_sha256') and digest(source)!=self.job['source_sha256']:
+                raise RuntimeError('上传原片身份已改变，未改用其他内容继续')
             return source
         url=self.job.get('source_url','');parsed=urlparse(url)
         if parsed.scheme not in ('http','https') or not parsed.hostname:raise RuntimeError('请输入有效的HTTP/HTTPS视频网址')
+        from source_acquisition import read_final_source, directory, finalize
+        video=read_final_source(self.root,self.name,url)
+        if video:return video
         tool=next((p for p in [self.root/'tools/yt-dlp',self.py.parent/'yt-dlp'] if p.is_file()),None)
         if tool is None:
             found=shutil.which('yt-dlp');tool=Path(found) if found else None
         if tool is None:raise RuntimeError('网址下载工具尚未安装，请先由本机管理员准备yt-dlp入口')
-        inputs=self.root/'inputs'/self.name;inputs.mkdir(parents=True,exist_ok=True)
-        existing=list(inputs.glob('source.*'));video=next((p for p in existing if p.suffix.lower() in ('.mp4','.mkv','.webm','.mov')),None)
-        if video:return video
+        inputs=directory(self.root,self.name,url);inputs.mkdir(parents=True,exist_ok=True)
         reserve=math.ceil(self.space_reserve(read(self.root/'config/local.json'))*1024**3)
         margin=512*1024**2
         def low_space():return shutil.disk_usage(self.root).free<reserve+margin
@@ -1375,9 +1695,7 @@ class Flow:
         except RuntimeError as error:
             if low_space():raise RuntimeError('下载时可用空间不足，已停止并保留原素材，请腾出空间后重试') from error
             raise
-        video=next((p for p in inputs.glob('source.*') if p.suffix.lower() in ('.mp4','.mkv','.webm','.mov')),None)
-        if video is None:raise RuntimeError('下载结束但未找到完整视频文件')
-        return video
+        return finalize(self.root,self.name,url)
     def _analyze_audio(self,config):
         """Overlap CPU-only ASR with the sole MPS separator; join before TTS.
 
@@ -1604,6 +1922,18 @@ def _run_with_recovery(root,job,update,run_command,is_cancelled,started,waited,d
             finally:
                 recovery_wall+=time.perf_counter()-advice_began
                 metrics(flow.metrics,'cancelled' if is_cancelled() else 'recovering' if pending_attempt else 'failed')
+            wait_began=time.perf_counter()
+            try:
+                proxy_retry_backoff(flow,pending_attempt)
+            except Exception:
+                recovery_wall+=time.perf_counter()-wait_began
+                cancelled=bool(is_cancelled())
+                record['status']='cancelled' if cancelled else 'backoff_stopped'
+                outcome('cancelled' if cancelled else 'stopped')
+                metrics(flow.metrics,'cancelled' if cancelled else 'failed')
+                raise
+            else:
+                recovery_wall+=time.perf_counter()-wait_began
             if is_cancelled():
                 outcome('cancelled');metrics(flow.metrics,'cancelled')
                 raise RuntimeError('任务已取消，已保留中间结果')
@@ -1616,54 +1946,130 @@ def _run_with_recovery(root,job,update,run_command,is_cancelled,started,waited,d
 
 
 def single_speaker(root,folder):
-    import numpy as np
-    import soundfile as sf
     rows=read(folder/'segments.asr.json')['segments'];source=folder/'separated/htdemucs/original/vocals.wav'
     if len(rows)!=1:raise RuntimeError('Single-speaker shortcut requires exactly one recognized segment')
-    row=rows[0];start=max(0,row['start_s']-.03);end=min(row['end_s']+.03,start+8)
-    with sf.SoundFile(source) as handle:
-        rate=handle.samplerate;handle.seek(round(start*rate));samples=handle.read(round((end-start)*rate),dtype='float32',always_2d=True).mean(axis=1)
-    reference=folder/'references/S00.wav';sf.write(reference,samples,rate,subtype='PCM_24')
-    save(folder/'speakers.json',{'S00':{'reference':str(reference.relative_to(root)),'reviewed':False,'human_reviewed':False,'review_method':'machine single detected segment; pending quality check'}})
+    helper=script(root,'speaker_references.py')
+    spec=importlib.util.spec_from_file_location('philos_single_speaker_reference',helper)
+    references=importlib.util.module_from_spec(spec);spec.loader.exec_module(references)
+    row=rows[0]
+    try:item=references.prepare_reference(root,folder,source,[{**row,'speaker_id':'S00'}],'S00')
+    except references.ReferenceSelectionError as error:
+        references.write_selection_report(root,folder,source,{},[error])
+        raise RuntimeError('单人物参考声音未通过安全候选检查，已保存源窗与原因') from None
+    save(folder/'speakers.json',{'S00':item})
     save(folder/'segments.plan.json',{'segments':[{**row,'segment_id':'line0001','source_ids':[row['segment_id']],'speaker_id':'S00',
         'speaker_reviewed':True,'speaker_review_method':'machine acoustic label, no identity verification','human_reviewed':False,
         'target_characters':max(5,int((row['end_s']-row['start_s'])*3.8))}],'identities_verified':False})
+    references.write_selection_report(root,folder,source,{'S00':item},[])
 
 
 def check_speakers(root,folder):
     import numpy as np
     import soundfile as sf
-    speakers=read(folder/'speakers.json');audit=[]
-    for sid,item in speakers.items():
-        path=(root/item['reference']).resolve()
-        if not path.is_relative_to(root):raise RuntimeError('参考声音路径超出当前项目')
-        samples,rate=sf.read(path,dtype='float32');duration=len(samples)/rate
-        valid=bool(.8<=duration<=15 and samples.size and np.isfinite(samples).all() and np.max(np.abs(samples))>.001)
+    root=Path(root).resolve();folder=Path(folder).resolve()
+    speakers=read(folder/'speakers.json');audit=[];manifest_issues=[];paths=set()
+    if not isinstance(speakers,dict) or not speakers:
+        manifest_issues.append('empty_or_invalid_manifest')
+    plan=read(folder/'segments.plan.json') if (folder/'segments.plan.json').is_file() else {}
+    rows=plan.get('segments',[]) if isinstance(plan,dict) else []
+    if not isinstance(rows,list) or not rows:
+        manifest_issues.append('empty_or_invalid_plan');rows=[]
+    expected={row.get('speaker_id') for row in rows if isinstance(row,dict)}
+    if expected and (not isinstance(speakers,dict) or set(speakers)!=expected):
+        manifest_issues.append('speaker_coverage_mismatch')
+    assignment_path=folder/'speaker_assignments.json'
+    document=read(assignment_path if assignment_path.is_file() else folder/'segments.asr.json')
+    source_rows=document.get('segments',[]) if isinstance(document,dict) else []
+    if (not isinstance(source_rows,list) or not source_rows
+            or any(not isinstance(row,dict) or not isinstance(row.get('segment_id'),str) for row in source_rows)
+            or len({row['segment_id'] for row in source_rows})!=len(source_rows)):
+        manifest_issues.append('empty_or_invalid_source_assignments');source_rows=[]
+    if len(source_rows)==1 and not assignment_path.is_file():
+        source_rows=[{**source_rows[0],'speaker_id':'S00'}]
+    own_ids={sid:[row['segment_id'] for row in source_rows if row.get('speaker_id')==sid] for sid in expected}
+    references=None
+    if isinstance(speakers,dict) and any(isinstance(item,dict) and 'reference_selection' in item for item in speakers.values()):
+        helper=script(root,'speaker_references.py')
+        spec=importlib.util.spec_from_file_location('philos_reference_provenance',helper)
+        references=importlib.util.module_from_spec(spec);spec.loader.exec_module(references)
+    reference_source=folder/'separated/htdemucs/original/vocals.wav'
+    if not reference_source.is_file():reference_source=folder/'audio/original.wav'
+    for sid,item in speakers.items() if isinstance(speakers,dict) else ():
+        reasons=[];duration=None;peak=None;source_ids=[]
+        if not isinstance(sid,str) or not re.fullmatch(r'S\d{2,}',sid) or not isinstance(item,dict):
+            manifest_issues.append('invalid_speaker_entry');continue
+        source_ids=item.get('source_segments',[])
+        if not isinstance(source_ids,list) or not source_ids or source_ids!=own_ids.get(sid):
+            reasons.append('source_assignment_mismatch')
+        selected_source=item.get('reference_source')
+        if isinstance(selected_source,str):
+            selected_source=(root/selected_source).resolve()
+            if selected_source.is_relative_to(root) and selected_source.is_file():paths.add(selected_source)
+        try:
+            reference=item.get('reference')
+            if not isinstance(reference,str):raise ValueError('missing_reference')
+            path=(root/reference).resolve()
+            if not path.is_relative_to(root):
+                reasons.append('outside_project')
+            elif not path.is_file():reasons.append('missing_reference')
+            else:
+                paths.add(path);info=sf.info(path);duration=info.frames/info.samplerate
+                if not .8<=duration<=15:reasons.append('invalid_duration')
+                if not 1<=info.channels<=2:reasons.append('unsupported_channels')
+                if not reasons:
+                    samples,rate=sf.read(path,dtype='float32')
+                    if not samples.size or len(samples)!=info.frames:reasons.append('incomplete_audio')
+                    elif not np.isfinite(samples).all():reasons.append('nonfinite_audio')
+                    else:
+                        peak=float(np.max(np.abs(samples)))
+                        if peak<=.001:reasons.append('no_usable_energy')
+                    if not reasons and references is not None and 'reference_selection' in item:
+                        reasons.extend(references.selection_provenance_errors(
+                            root,reference_source,source_rows,sid,item,samples,rate))
+        except (OSError,RuntimeError,ValueError,TypeError):reasons.append('unreadable_reference')
+        valid=not reasons
         item.update(reviewed=valid,human_reviewed=False,review_method='machine acoustic-run and finite/duration/energy checks; identity not verified')
-        audit.append({'speaker_id':sid,'duration_s':duration,'finite_duration_energy_passed':valid,'human_reviewed':False})
-    save(folder/'speakers.json',speakers);save(folder/'speaker_machine_review.json',{'speakers':audit,'human_reviewed':False,'identities_verified':False})
-    if not all(row['finite_duration_energy_passed'] for row in audit):raise RuntimeError('部分人物参考声音太短或无有效声音，未继续克隆配音')
+        audit.append({'speaker_id':sid,'source_ids':source_ids,'duration_s':duration,'peak':peak,
+            'reason_codes':reasons,'finite_duration_energy_passed':valid,
+            'source_provenance_checked':valid and 'reference_selection' in item,'human_reviewed':False})
+    if isinstance(speakers,dict):save(folder/'speakers.json',speakers)
+    for name in ('source.json','segments.asr.json','speaker_assignments.json','segments.plan.json','speakers.json'):
+        path=folder/name
+        if path.is_file():paths.add(path)
+    if (folder/'source.json').is_file():
+        source=read(folder/'source.json');raw=Path(source.get('input','')).resolve()
+        if raw.is_relative_to(root) and raw.is_file():paths.add(raw)
+    report={'schema':'speaker_reference_review_v2','complete':True,
+        'bindings':{str(path.relative_to(root)):digest(path) for path in sorted(paths)},
+        'speakers':audit,'manifest_issues':sorted(set(manifest_issues)),
+        'human_reviewed':False,'identities_verified':False}
+    save(folder/'speaker_machine_review.json',report)
+    if manifest_issues or not audit or not all(row['finite_duration_energy_passed'] for row in audit):
+        failed=[row['speaker_id'] for row in audit if not row['finite_duration_energy_passed']]
+        raise RuntimeError('人物参考声音未通过检查'+('：'+'、'.join(failed) if failed else '：参考清单不完整'))
 
 
 def translate_job(root,folder):
     from proxy_client import translate_segments,ProxyTransportError,emit_transport_failure
     data=read(folder/'translation/input.json');rows=data['segments']
     language=normalize_language(data.get('source_language','de'),allow_auto=False)
-    review_scope=None
-    if (folder/'translation/source_review_hints.json').is_file():
+    review_scope=None;language_exceptions={}
+    mixed=any(row.get('source_language',language)!=language for row in rows)
+    if (folder/'translation/source_review_hints.json').is_file() or mixed:
         source=read(folder/'source.json')
-        review_scope,_=reviewed_source_plan(folder,folder/'segments.plan.json',digest(Path(source['input'])))
+        review_scope,source_revision=reviewed_source_plan(folder,folder/'segments.plan.json',digest(Path(source['input'])))
         if rows!=review_scope[:len(rows)]:raise ValueError('预览译稿不是当前源计划的完整前缀')
+        language_exceptions=(source_revision or {}).get('language_exceptions',{})
     def progress(done,total):print(json.dumps({'event':'translation_progress','completed':done,'total':total}),flush=True)
     try:
         updated,report=translate_segments(rows,root,progress=progress,diagnostic_dir=folder/'translation/diagnostics',
-            source_language=language,review_scope=review_scope)
+            source_language=language,review_scope=review_scope,language_exceptions=language_exceptions)
     except ProxyTransportError as error:
         emit_transport_failure(error.failure_metadata,event='proxy_stage_failure')
         raise
     from translation_reuse import apply_prior_reviews
     updated,report=apply_prior_reviews(root,folder,rows,updated,report)
-    validate_translations(rows,updated,report)
+    validate_translations(rows,updated,report,folder=folder)
     revision_path=folder/'source_plan_revision.json'
     if revision_path.is_file():
         revision=read(revision_path);pending=set(revision.get('blocking_unresolved',[]))
@@ -1674,7 +2080,9 @@ def translate_job(root,folder):
             report['review_status']='machine_second_pass_complete_source_review_pending'
             updated=[{**row,'source_review_required':True} if row['segment_id'] in pending else row for row in updated]
     save(folder/'segments.json',{'schema_version':2,'segments':updated,**source_language_metadata(language),'human_reviewed':False,
-        'translation_status':'machine_second_pass_complete_draft','review_method':report['review_method']})
+        'translation_status':'saved_machine_approvals_and_editorial_revisions_pending_whole_content_review'
+            if report.get('user_editorial_revised_rows') else 'machine_second_pass_complete_draft',
+        'review_method':report['review_method']})
     report.update(job=folder.name,source_segments_sha256=digest(folder/'segments.json'),
         source_speakers_sha256=digest(folder/'speakers.json'))
     save(folder/'translation/report.json',report)

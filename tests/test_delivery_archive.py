@@ -16,10 +16,10 @@ import delivery_archive as archive
 class DeliveryArchiveTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
-        self.root=Path(self.tmp.name).resolve();self.jid='web_20260115_102030_abcdef12'
+        self.root=Path(self.tmp.name).resolve();self.jid='web_20990101_120000_00000001'
         self.folder=self.root/'jobs'/self.jid;self.folder.mkdir(parents=True)
         self.job={'id':self.jid,'source_sha256':'a'*64,'title':'测试视频.webs.h264',
-                  'created_at':'2026-01-15T10:20:30+00:00'}
+                  'created_at':'2026-10-23T19:28:04+00:00'}
         self.artifacts=[self.artifact('outputs/final.mp4','video',b'approved video'),
                         self.artifact('outputs/zh.srt','subtitle','完整字幕'.encode())]
         mock=patch.object(archive.shutil,'disk_usage',return_value=types.SimpleNamespace(free=20*1024**3))

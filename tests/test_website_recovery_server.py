@@ -316,9 +316,11 @@ class WebsiteRecoveryServerTests(unittest.TestCase):
         self.job(status='running')
         manager = server.JobManager(self.root, start_worker=False)
         job = manager.jobs[JID]
-        self.assertEqual(job['status'], 'failed')
-        self.assertIn('断点', job['error'])
-        self.assertNotIn('重新提交', job['error'])
+        self.assertEqual(job['status'], 'queued')
+        self.assertEqual(job['queue_reason'], 'automatic_takeover')
+        self.assertIsNone(job['error'])
+        self.assertEqual(job['attempts'][-1]['status'], 'interrupted')
+        self.assertIn('自动继续', job['stage'])
         self.assertEqual(self.original.read_bytes(), b'original-media-must-stay-unchanged')
 
     def test_manual_review_returns_only_scoped_rows_and_safe_save_summary(self):

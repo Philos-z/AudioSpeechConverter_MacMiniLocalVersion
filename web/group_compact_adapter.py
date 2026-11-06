@@ -177,7 +177,9 @@ def validated_alignment(group,alignment,rows):
     if audio.get('native_sidecar_sha256'):check(sha(sidecar)==audio['native_sidecar_sha256'],'Declared generation sidecar SHA changed')
     check(entry.get('schema') in ('native_mlx_whole_utterance_v1','continuous_utterance_v1'),'Unexpected group generation provenance')
     check(entry['sha256']==audio['sha256'] and entry['cache_key']==key(content),'Generation content/audio receipt mismatch')
-    check(content['text_zh']==group['text_zh'] and content['effective_tts_text']==(group.get('tts_pronunciation_text') or group['text_zh']),
+    from user_voice_adoption_20261103 import pronunciation_matches
+    check(pronunciation_matches(group,content,audio['sha256'],caller_job=alignment.get('job'),
+          plan_path=alignment.get('plan',{}).get('path'),manifest_path=alignment.get('native_manifest',{}).get('path')),
           'Generated group text or pronunciation differs from source plan')
     check(content['reference_sha256']==group['reference']['sha256'],'Generated group used another voice reference')
     cues=alignment['subtitle_cues'];check([c['segment_id'] for c in cues]==group['member_ids'],'Missing or duplicate original subtitle rows')
@@ -322,6 +324,22 @@ def build_group_edl(plan,alignments,source,selected_groups=None,include_intro=Fa
         cues[-1]['output_end_s']=(cursor+frames)/25
         used.extend(group['member_ids']);cursor+=frames
     check(len(used)==len(set(used)),'Original source subtitle row played twice')
+    # Full production retains the source ending after the final complete voice.
+    # The existing .35s voice-group tail is already included; add it only once.
+    retained_tail=None
+    if include_intro:
+        start=clips[-1]['source_end_s'];end=source['duration_s']
+        check(0<=start<=end+1e-7,'Final picture extends beyond source')
+        remaining=max(0.,end-start)
+        if remaining>1e-7:
+            frames=math.ceil(remaining*25-1e-8);length=frames/25
+            clips.append({'kind':'outro','source_start_s':start,'source_end_s':end,
+                'source_duration_s':remaining,'freeze_s':max(0.,length-remaining),
+                'output_start_s':cursor/25,'output_end_s':(cursor+frames)/25,'frames':frames})
+            cursor+=frames
+        retained_tail={'source_start_s':start,'source_end_s':end,
+            'source_duration_s':remaining,'additional_group_pause_s':0.,
+            'source_ending_retained':True,'audio_and_picture_share_same_clip':True}
     edl={'schema':SCHEMA,'format':SCHEMA,'source_input':source['input'],'source_duration_s':source['duration_s'],
         'fps':25,'width':960,'height':540,'source_picture_box':[0,0,960,540],'duration_s':cursor/25,'frames':cursor,
         'speech_segments':len(utterances),'tts_group_count':len(utterances),'source_row_count':len(used),
@@ -333,6 +351,7 @@ def build_group_edl(plan,alignments,source,selected_groups=None,include_intro=Fa
         'strict_ctc_rejected_groups':[a['group_id'] for a in alignments if a['group_id'] in chosen and a.get('strict_ctc_rejected')],
         'content_risks':[risk for a in alignments if a['group_id'] in chosen for risk in a.get('content_risks',[])],
         'human_reviewed':False,'full_delivery_approved':False}
+    if retained_tail is not None:edl['retained_source_tail']=retained_tail
     if picture_holds is not None:
         edl['picture_holds']={'policy':picture_holds['policy'],'applied':reviewed_holds,'count':len(reviewed_holds),
             'max_freeze_s':max((hold['freeze_s'] for hold in reviewed_holds),default=0.),
@@ -462,6 +481,35 @@ def verify(root,output,skip_levels=False):
     check([p['group_id'] for p in mixed['placements']]==[g['group_id'] for g in groups],'Group audio mixed zero or multiple times')
     check(sha(audit['plan'])==audit['plan_sha256'] and all(sha(p['path'])==p['sha256'] for p in audit['alignments']),'Plan/alignment receipt changed')
     plan=read(audit['plan']);source_rows=validate_plan(plan)
+    check(edl['source_plan_row_count']==len(source_rows)
+        and edl['partial_preview']==(len(cues)!=len(source_rows)),
+        'Partial-preview marker must match the actual source coverage')
+    if not edl['partial_preview']:
+        check(sha(audit['source_json'])==audit['source_json_sha256'], 'Source ending receipt changed')
+        source=read(audit['source_json'])
+        tail=edl.get('retained_source_tail',{})
+        final_speech=edl['clips'][groups[-1]['clip_index']]
+        check(tail.get('source_ending_retained') is True
+            and tail.get('additional_group_pause_s')==0.
+            and tail.get('audio_and_picture_share_same_clip') is True
+            and abs(tail['source_start_s']-final_speech['source_end_s'])<1e-7
+            and abs(tail['source_duration_s']-(source['duration_s']-tail['source_start_s']))<1e-7
+            and abs(tail['source_end_s']-source['duration_s'])<1e-7
+            and abs(edl['clips'][-1]['source_end_s']-source['duration_s'])<1e-7,
+            'Complete delivery must retain the actual source ending')
+        if tail['source_duration_s']>1e-7:
+            ending=edl['clips'][-1]
+            tail_frames=math.ceil(tail['source_duration_s']*25-1e-8)
+            check(ending['kind']=='outro' and abs(ending['source_start_s']-tail['source_start_s'])<1e-7
+                and abs(ending['source_duration_s']-tail['source_duration_s'])<1e-7
+                and ending['frames']==tail_frames
+                and abs(ending['output_end_s']-ending['output_start_s']-tail_frames/25)<1e-7
+                and abs(ending['freeze_s']-(tail_frames/25-tail['source_duration_s']))<1e-7
+                and abs(edl['duration_s']-ending['output_end_s'])<1e-7
+                and abs(edl['frames']/25-edl['duration_s'])<1e-7
+                and 0<=ending['freeze_s']<.04+1e-7
+                and abs(ending['output_start_s']-groups[-1]['output_end_s'])<1e-7,
+                'Source ending must follow the final complete voice without a second group pause')
     for receipt in audit['alignments']:
         alignment=read(receipt['path']);planned=next(g for g in plan['tts_groups'] if g['group_id']==alignment['group_id'])
         validated_alignment(planned,alignment,source_rows)
@@ -504,6 +552,7 @@ def verify(root,output,skip_levels=False):
         'full_decode_passed':True,'encoded_levels':levels,'human_reviewed':False,'listening_approved':False,
         'subtitle_timing_schemas':edl['subtitle_timing_schemas'],'strict_ctc_rejected_groups':edl['strict_ctc_rejected_groups'],
         'content_risks':edl['content_risks']}
+    if not edl['partial_preview']:report['retained_source_tail']=edl['retained_source_tail']
     save(output/'group_verification.json',report);return report
 
 

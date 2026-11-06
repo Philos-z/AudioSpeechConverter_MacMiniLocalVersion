@@ -54,7 +54,7 @@ def normalize_policy(value):
 
 
 def _now():
-    return datetime.now(timezone.utc).isoformat(timespec='seconds')
+    return datetime.now(timezone.utc).isoformat(timespec='microseconds')
 
 
 def _bytes(value):
@@ -213,7 +213,8 @@ def _finish_apply(folder, journal, event):
     for name, wanted in protected.items():
         if (name not in {'segments.json', 'translation/input.json', 'translation/source_quality_notes.json', 'translation/independent_content_review.json', 'segments.plan.json', 'source.json', 'speakers.json',
                          'revisions/source_review_v1/segments.plan.json'}
-                and not name.startswith('revisions/source_review_v1/evidence/')):
+                and not name.startswith('revisions/source_review_v1/evidence/')
+                and not re.fullmatch(r'translation/autonomous_content_review/history/[a-f0-9]{64}\.json',name)):
             raise ValueError('恢复事务源文件保护位置不合法')
         if _file_hash(folder, name) != wanted:
             event.update(status='failed', reason='concurrent_update', finished_at=_now())

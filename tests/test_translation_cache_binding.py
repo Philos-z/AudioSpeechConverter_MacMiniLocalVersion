@@ -92,9 +92,11 @@ class TranslationSignatureTests(unittest.TestCase):
         for path in (self.root / "source.mp4", self.root / "tools/python",
                      self.root / "assets/philos_club_serif_wordmark.png",
                      self.root / "scripts/speaker_plan.py",
+                     self.root / "scripts/speaker_references.py",
                      self.root / "scripts/compact_edit.py",
                      self.root / "web/subtitle_preflight.py",
                      self.root / "web/proxy_client.py",
+                     self.root / "web/committed_review_targets.py",
                      self.folder / "separated/htdemucs/original/vocals.wav",
                      self.folder / "separated/htdemucs/original/no_vocals.wav",
                      self.folder / "audio/original.wav", self.folder / "audio/asr16k.wav"):
@@ -117,12 +119,14 @@ class TranslationSignatureTests(unittest.TestCase):
             "options": {"source_language": "de", "target_language": "zh", "voice_pilot_groups": 0}}
 
     def run_to_translation_boundary(self):
-        flow = FakeFlow(self.root, self.job, lambda *a, **kw: None,
-            lambda *a, **kw: self.fail("A real subprocess would have been launched"), lambda: False)
+        with patch.object(sys, "path", [str(PRODUCTION_WEB), *sys.path]):
+            flow = FakeFlow(self.root, self.job, lambda *a, **kw: None,
+                lambda *a, **kw: self.fail("A real subprocess would have been launched"), lambda: False)
         flow.py = flow.mlx_py = flow.asr_py = self.root / "tools/python"
         flow.translation_calls = self.calls
         before = len(self.calls)
-        with patch.object(pipeline, "__file__", str(self.fixture_pipeline)), \
+        with patch.object(sys, "path", [str(PRODUCTION_WEB), *sys.path]), \
+             patch.object(pipeline, "__file__", str(self.fixture_pipeline)), \
              patch.object(pipeline, "FFMPEG", str(flow.py)), patch.object(pipeline, "FFPROBE", str(flow.py)), \
              patch.object(pipeline, "space_preflight", return_value={"sufficient": True}):
             with self.assertRaises(TranslationCheckedStop):

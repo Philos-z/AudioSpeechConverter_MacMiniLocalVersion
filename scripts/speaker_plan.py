@@ -12,6 +12,9 @@ import secrets
 
 import numpy as np
 import soundfile as sf
+from speaker_references import (ReferenceSelectionError, prepare_reference,
+                                reference_window, validate_reference_rows,
+                                write_selection_report)
 
 
 def save(path, data):
@@ -30,6 +33,9 @@ def main():
     if not original.exists():
         original.write_bytes((job/'segments.json').read_bytes())
     data=json.loads(original.read_text()); rows=data['segments']
+    stem=job/'separated/htdemucs/original/vocals.wav'
+    reference_source=stem if stem.exists() else job/'audio/original.wav'
+    validate_reference_rows(rows,sf.info(reference_source).duration)
     cache=job/'speaker_embeddings.npz'
     fingerprint=hashlib.sha256(original.read_bytes()).hexdigest()
     valid_cache=False
@@ -89,29 +95,15 @@ def main():
     save(job/'speaker_assignments.json',{'method':f'CAMPPlus {args.method}-link acoustic clusters, not identity verification',
         'cosine_distance_threshold':args.threshold,'segments':assignments,
         'explicit_machine_corrections':correction_receipt['applied'],'identities_verified':False,'human_reviewed':False})
-    # Pick a long homogeneous run, then cut a maximum 8-second speaker reference.
-    runs=[]
-    for i,row in enumerate(assignments):
-        if runs and runs[-1]['speaker_id']==row['speaker_id'] and row['start_s']-runs[-1]['end_s']<.8:
-            runs[-1]['end_s']=row['end_s'];runs[-1]['indices'].append(i)
-        else:
-            runs.append({'speaker_id':row['speaker_id'],'start_s':row['start_s'],'end_s':row['end_s'],'indices':[i]})
-    stem=job/'separated/htdemucs/original/vocals.wav'
-    reference_source=stem if stem.exists() else job/'audio/original.wav'
-    speakers={}
+    # Keep a usable legacy longest run; otherwise try the same label's real audio.
+    speakers={};reference_failures=[]
     for name in sorted(set(names)):
-        candidates=[r for r in runs if r['speaker_id']==name]
-        best=max(candidates,key=lambda r:min(8,r['end_s']-r['start_s']))
-        start=max(0,best['start_s']-.03);end=min(best['end_s']+.03,start+8)
-        with sf.SoundFile(reference_source) as source:
-            sr=source.samplerate;source.seek(round(start*sr))
-            audio=source.read(round((end-start)*sr),dtype='float32',always_2d=True).mean(axis=1)
-        ref=job/'references'/f'{name}.wav'
-        sf.write(ref,audio,sr,subtype='PCM_24')
-        speakers[name]={'reference':str(ref.relative_to(root)),'reviewed':True,
-                        'review_method':'acoustic run selection; identities not verified',
-                        'reference_window_s':[start,end], 'reference_source':str(reference_source.relative_to(root)),
-                        'source_segments':[r['segment_id'] for r in assignments if r['speaker_id']==name]}
+        try:speakers[name]=prepare_reference(root,job,reference_source,assignments,name)
+        except ReferenceSelectionError as error:reference_failures.append(error)
+    if reference_failures:
+        write_selection_report(root,job,reference_source,speakers,reference_failures)
+        raise RuntimeError('No valid reference for acoustic speakers: '+
+                           ', '.join(error.speaker_id for error in reference_failures))
     save(job/'speakers.json',speakers)
     grouped=[]
     for row in assignments:
@@ -135,6 +127,7 @@ def main():
         row['slot_end_s']=min(next_start-.06,row['end_s']+.8,duration)
         row['target_characters']=max(5,int((row['slot_end_s']-row['start_s'])*3.8))
     save(job/'segments.plan.json',{'schema_version':2,'segments':grouped,'source':'faster-whisper small; cross-check supplied subtitles','speaker_method':'CAMPPlus acoustic clustering','identities_verified':False})
+    write_selection_report(root,job,reference_source,speakers,[])
     print('PLAN_READY',len(grouped),'lines',len(speakers),'acoustic speakers',flush=True)
     print('FIRST_GROUPS',[(r['start_s'],r['end_s'],r['speaker_id'],r['text_de'][:60]) for r in grouped[:15]],flush=True)
 

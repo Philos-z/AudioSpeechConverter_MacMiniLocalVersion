@@ -29,6 +29,17 @@ class SourceBoundaryTests(unittest.TestCase):
    self.assertFalse(exact_window_matches(value,self.row,self.rows,924))
  def test_original_exact_window_is_still_valid(self):
   self.assertTrue(exact_window_matches({'window_start_s':778.06,'window_end_s':782.86},self.row,self.rows,924))
+ def test_default_eight_tenths_slot_keeps_complete_tail_without_neighbor(self):
+  row={'start_s':340.56,'end_s':351.0,'slot_end_s':351.8,'overlap':False}
+  rows=[row,{'start_s':351.96,'end_s':356.04}]
+  proof={'kind':'exact','window_start_s':340.56,'window_end_s':351.8,
+   'original_start_s':340.56,'original_end_s':351.0,
+   'method':'complete_existing_source_slot_without_neighbor_speech','no_neighbor_sentence_included':True}
+  self.assertEqual(slot_tail_end(row,rows,956.4),351.8)
+  self.assertTrue(exact_window_matches(proof,row,rows,956.4))
+  for altered in ({**row,'slot_end_s':351.8001},{**row,'overlap':True}):
+   self.assertEqual(slot_tail_end(altered,[altered,rows[1]],956.4),351.0)
+  self.assertFalse(exact_window_matches(proof,row,[row,{'start_s':351.79,'end_s':356.04}],956.4))
  def test_missing_first_word_uses_only_allocated_gap(self):
   row={'start_s':617.1,'end_s':620.82,'slot_end_s':621.16,'overlap':False}
   rows=[{'start_s':611.82,'end_s':615.28,'slot_end_s':616.08,'overlap':False},row,{'start_s':621.22,'end_s':625}]

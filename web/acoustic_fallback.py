@@ -14,6 +14,10 @@ import media_recovery as media
 import generic_group_alignment as alignment
 
 SCHEMA = 'local_acoustic_fallback_v1'
+CONFIRMED_MODE = 'confirmed_fault'
+UNCONFIRMED_MODE = 'unconfirmed_content'
+EXPLICIT_MODE = 'explicit_seed43'
+UNCONFIRMED_REASON = 'two_target_free_models_cannot_confirm_complete_content'
 COMPOSITION = 'local_acoustic_fallback_composition_v1'
 POLICY = {'cfm_steps':25, 'seed':42, 'dtype':'float32', 'use_bf16':False,
           'emo_vector':None, 'emo_alpha':1., 'duration_factor':1., 'num_beams':1,
@@ -57,13 +61,19 @@ def _inputs(root,folder,plan_path,base_path):
     return root,folder,plan,plan_path,base_path,base,audio
 
 
-def _quality(root,folder,plan,plan_path,base_path,base,audio,quality_path):
+def _quality(root,folder,plan,plan_path,base_path,base,audio,quality_path,*,mode=CONFIRMED_MODE):
+    media.require(mode in {CONFIRMED_MODE,UNCONFIRMED_MODE,EXPLICIT_MODE}, 'Unknown fallback mode')
     quality_path=media.job_file(folder,quality_path);quality=media.read(quality_path)
     expected={'plan':media.record(folder,plan_path),'native_manifest':media.record(folder,base_path),
               'source_segments_sha256':plan['source_segments']['sha256']}
     media.require(quality.get('schema')=='website_audio_quality_v1' and quality.get('complete') is True
         and quality.get('binding')==expected and quality.get('human_listened') is False
         and quality.get('waveform_modified') is False, 'Acoustic quality receipt is stale/incomplete')
+    if mode in {UNCONFIRMED_MODE,EXPLICIT_MODE}:
+        media.require(quality.get('policy')=='layered_full_content_v1'
+            and quality.get('status')=='needs_content_review'
+            and quality.get('needs_repair_ids')==[] and quality.get('needs_repair_groups')==[]
+            and quality.get('flagged_groups')==[], 'Unconfirmed fallback requires only unconfirmed full-content findings')
     groups=plan['tts_groups'];rows=quality.get('rows',[])
     media.require(len(rows)==len(groups)==quality.get('checked_utterances')
         and [r['group_id'] for r in rows]==[g['group_id'] for g in groups], 'Quality coverage changed')
@@ -73,6 +83,39 @@ def _quality(root,folder,plan,plan_path,base_path,base,audio,quality_path):
             and row.get('audio_sha256')==bound['sha256'] and row.get('frames')==bound['frames']
             and row.get('sample_rate')==bound['sample_rate'] and row.get('channels')==1
             and row.get('finite_samples') is True, 'Quality row/audio provenance changed')
+        if quality.get('policy')=='layered_full_content_v1':
+            from speech_content_quality import validate_quality_row
+            decision=validate_quality_row(root,folder,group,native,bound,row)
+            media.require(decision['needs_repair'] is row['needs_repair'],
+                          'Full-sentence content decision changed')
+            if mode in {UNCONFIRMED_MODE,EXPLICIT_MODE}:
+                media.require(type(row.get('needs_review')) is bool and decision['needs_review'] is row['needs_review']
+                    and decision['needs_repair'] is False, 'Unconfirmed status differs from current evidence')
+                if not decision['needs_review']:continue
+                media.require(decision.get('status')=='needs_review' and decision.get('requires_medium') is True
+                    and decision.get('medium') is not None
+                    and decision.get('reasons')==['recognizer_uncertainty_without_sufficient_repair_evidence']
+                    and isinstance(row.get('medium_observation'),dict),
+                    'Unconfirmed fallback requires two actual full target-free observations')
+                first=media.read(media.checked_record(folder,row['observation']))
+                second=media.read(media.checked_record(folder,row['medium_observation']))
+                media.require(first['profile']['model_path']!=second['profile']['model_path']
+                    and first['profile']['model_assets']!=second['profile']['model_assets'],
+                    'Unconfirmed fallback requires two distinct local models')
+                if mode==EXPLICIT_MODE:
+                    media.require(bound['generation_schema']=='continuous_utterance_v1'
+                        and native['content'].get('parameters',{}).get('seed')==42,
+                        'Explicit seed43 exception requires the exact prior seed42 Torch alternate')
+                else:
+                    media.require(bound['generation_schema']=='native_mlx_whole_utterance_v1',
+                        'Torch fallback content remains unconfirmed; stop without another attempt')
+                selected.append(group)
+                continue
+            if row['needs_repair']:
+                media.require(bound['generation_schema']=='native_mlx_whole_utterance_v1',
+                              'Torch acoustic fallback already failed; stop without changing text')
+                selected.append(group)
+            continue
         if not row['needs_repair']:continue
         media.require(bound['generation_schema']=='native_mlx_whole_utterance_v1',
                       'Torch acoustic fallback already failed; stop without changing text')
@@ -96,11 +139,18 @@ def _quality(root,folder,plan,plan_path,base_path,base,audio,quality_path):
             'Acoustic ASR flag does not match current text/audio')
         selected.append(group)
     ids=[g['group_id'] for g in selected];members=[sid for g in selected for sid in g['member_ids']]
-    media.require(1<=len(ids)<=8 and quality.get('needs_repair_groups')==ids
-        and quality.get('needs_repair_ids')==members
-        and quality.get('flagged_groups')==[{'group_id':g['group_id'],'member_ids':g['member_ids']} for g in selected]
-        and quality.get('status')=='needs_repair', 'Only 1 to 8 actual flagged groups may regenerate')
-    return quality_path,selected
+    if mode in {UNCONFIRMED_MODE,EXPLICIT_MODE}:
+        media.require(1<=len(ids) and quality.get('needs_review_groups')==ids
+            and quality.get('needs_review_ids')==members, 'Unconfirmed group/member coverage changed')
+    else:
+        media.require(1<=len(ids) and (len(ids)<=8 or quality.get('policy')=='layered_full_content_v1')
+            and quality.get('needs_repair_groups')==ids
+            and quality.get('needs_repair_ids')==members
+            and quality.get('flagged_groups')==[{'group_id':g['group_id'],'member_ids':g['member_ids']} for g in selected]
+            and quality.get('status')=='needs_repair', 'Only actual fully evidenced flagged groups may regenerate')
+    # Large batches retain every negative observation. Recover at most eight
+    # groups per existing budget action, then recheck the complete composition.
+    return quality_path,selected[:8]
 
 
 def _group_key(plan,group):
@@ -113,7 +163,10 @@ def _group_key(plan,group):
 def _quality_snapshot(folder,path):
     """A cache hit is a runtime detail, not a new acoustic failure identity."""
     value=copy.deepcopy(media.read(path))
-    for row in value['rows']:row.pop('asr_cache_hit',None)
+    value.pop('wall_seconds',None)
+    for row in value['rows']:
+        row.pop('asr_cache_hit',None)
+        row.pop('medium_asr_cache_hit',None)
     value=json.loads(json.dumps(value,ensure_ascii=False,sort_keys=True,allow_nan=False))
     encoded=(json.dumps(value,ensure_ascii=False,indent=2,allow_nan=False)+'\n').encode()
     relative='tts/acoustic_fallback/quality/'+media.key(value)+'.json'
@@ -130,31 +183,80 @@ def _check_request(root,folder,plan_path,base_path,request):
     binding=request['binding']
     media.require(binding['plan']==media.record(folder,plan_path)
         and binding['base_manifest']==media.record(folder,base_path), 'Acoustic request input changed')
+    mode=binding.get('mode',CONFIRMED_MODE)
+    media.require(mode in {CONFIRMED_MODE,UNCONFIRMED_MODE,EXPLICIT_MODE}
+        and request.get('mode',CONFIRMED_MODE)==mode, 'Fallback request mode changed')
     quality=media.read(media.checked_record(folder,binding['quality']))
+    if mode in {UNCONFIRMED_MODE,EXPLICIT_MODE}:
+        pending=[row for row in quality['rows'] if row.get('needs_review') is True]
+        media.require(binding.get('trigger_reason')==UNCONFIRMED_REASON
+            and request.get('confirmed_acoustic_fault') is False
+            and request.get('content_confirmed') is False
+            and quality.get('policy')=='layered_full_content_v1' and quality.get('complete') is True
+            and quality.get('status')=='needs_content_review'
+            and quality.get('needs_repair_groups')==[] and quality.get('needs_repair_ids')==[]
+            and quality.get('flagged_groups')==[]
+            and quality.get('needs_review_groups')==[row['group_id'] for row in pending]
+            and quality.get('needs_review_ids')==[sid for row in pending for sid in row['member_ids']]
+            and request['group_ids']==binding['group_ids']==[row['group_id'] for row in pending[:8]],
+            'Frozen unconfirmed finding or selection changed')
     for row in quality['rows']:
-        if row['needs_repair']:media.checked_record(folder,row['observation'])
+        if row['needs_repair'] or mode in {UNCONFIRMED_MODE,EXPLICIT_MODE} and row.get('needs_review') is True:
+            media.checked_record(folder,row['observation'])
+            if mode in {UNCONFIRMED_MODE,EXPLICIT_MODE}:
+                media.require(isinstance(row.get('medium_observation'),dict), 'Unconfirmed evidence lost second recognizer')
+            if row.get('medium_observation'):media.checked_record(folder,row['medium_observation'])
     for proof in request['child_files']:
         path=_file(root,proof['path'])
         media.require(media.sha(path)==proof['sha256'], 'Fallback child data changed')
-    media.require(media.sha(_file(root,'scripts/continuous_tts.py'))==binding['runner_sha256'],
-                  'Torch runner changed during fallback')
+    if mode==EXPLICIT_MODE:
+        import explicit_voice_attempt as explicit
+        _,_,plan,_,_,base,audio=_inputs(root,folder,plan_path,base_path)
+        selected=[g for g in plan['tts_groups'] if g['group_id'] in request['group_ids']]
+        reviewed_quality=media.checked_record(folder,binding.get('reviewed_quality'))
+        snapshot=explicit.context(root,folder,plan,plan_path,base_path,base,audio,reviewed_quality,selected)
+        authorization=explicit.validate(root,folder,binding.get('explicit_authorization',{}).get('decision_ref'),snapshot)
+        media.require(authorization==binding.get('explicit_authorization') and binding.get('runner_relative')==explicit.RUNNER
+            and binding.get('parameters')=={**POLICY,'seed':43},'Explicit voice authorization or seed43 policy changed')
+        runner=_file(root,explicit.RUNNER)
+    else:
+        runner=_file(root,'scripts/continuous_tts.py')
+    media.require(media.sha(runner)==binding['runner_sha256'], 'Torch runner changed during fallback')
 
 
-def prepare(root,folder,plan_path,base_stable_manifest,quality_path):
+def prepare(root,folder,plan_path,base_stable_manifest,quality_path,*,mode=CONFIRMED_MODE,decision_ref=None):
     root,folder,plan,plan_path,base_path,base,audio=_inputs(root,folder,plan_path,base_stable_manifest)
-    quality_path,selected=_quality(root,folder,plan,plan_path,base_path,base,audio,quality_path)
+    quality_path,selected=_quality(root,folder,plan,plan_path,base_path,base,audio,quality_path,mode=mode)
     quality_record,quality_snapshot=_quality_snapshot(folder,quality_path)
-    runner=_file(root,'scripts/continuous_tts.py');python=root/'vendor/index-tts/.venv/bin/python'
+    explicit_authorization=None
+    if mode==EXPLICIT_MODE:
+        import explicit_voice_attempt as explicit
+        snapshot=explicit.context(root,folder,plan,plan_path,base_path,base,audio,quality_path,selected)
+        explicit_authorization=explicit.validate(root,folder,decision_ref,snapshot)
+        runner=_file(root,explicit.RUNNER)
+    else:
+        media.require(decision_ref is None,'Explicit voice permission cannot alter ordinary recovery')
+        runner=_file(root,'scripts/continuous_tts.py')
+    python=root/'vendor/index-tts/.venv/bin/python'
     media.require(python.is_file(), 'Formal Torch Python environment missing')
     group_keys=[_group_key(plan,g) for g in selected]
     binding={'schema':SCHEMA,'plan':media.record(folder,plan_path),'base_manifest':media.record(folder,base_path),
         'quality':quality_record,'source_video_sha256':plan['source_binding']['source_video_sha256'],
         'base_audio':audio,'group_ids':[g['group_id'] for g in selected],'group_keys':group_keys,
-        'parameters':POLICY,'runner_sha256':media.sha(runner)}
+        'parameters':{**POLICY,**({'seed':43} if mode==EXPLICIT_MODE else {})},'runner_sha256':media.sha(runner)}
+    if mode in {UNCONFIRMED_MODE,EXPLICIT_MODE}:
+        binding.update(mode=mode,trigger_reason=UNCONFIRMED_REASON)
+    if mode==EXPLICIT_MODE:
+        binding.update(explicit_authorization=explicit_authorization,runner_relative=explicit.RUNNER,
+            reviewed_quality=media.record(folder,quality_path))
     token=media.key({'action':'audio_regenerate','binding':binding})
     for entry in media.journal(folder)['entries']:
+        if (mode==EXPLICIT_MODE and entry['action']=='audio_regenerate'
+                and entry['binding'].get('mode')==EXPLICIT_MODE):
+            media.require(entry['token']==token,'The one explicit voice action was already reserved; authorization cannot reset it')
         if entry['action']=='audio_regenerate' and entry['token']!=token:
-            media.require(not set(group_keys).intersection(entry['binding'].get('group_keys',[])),
+            permitted_prior=mode==EXPLICIT_MODE and entry['token'] in explicit.PRIOR_TOKENS
+            media.require(permitted_prior or not set(group_keys).intersection(entry['binding'].get('group_keys',[])),
                           'The same source sound group may use Torch fallback only once')
     reservation=media.reserve_recovery(folder,'audio_regenerate',binding)
     _write_once(media.job_file(folder,quality_record['path'],exists=False),quality_snapshot)
@@ -182,6 +284,8 @@ def prepare(root,folder,plan_path,base_stable_manifest,quality_path):
     request={'schema':SCHEMA,'token':reservation['token'],'binding':binding,'child_job':child_id,
         'child_files':child_files,'argv':argv,'fallback_manifest':str(output/'manifest.json'),
         'group_ids':binding['group_ids'],'human_listened':False,'text_changed':False}
+    if mode in {UNCONFIRMED_MODE,EXPLICIT_MODE}:
+        request.update(mode=mode,confirmed_acoustic_fault=False,content_confirmed=False)
     _write_once(directory/'request.json',request)
     return request
 
@@ -194,9 +298,10 @@ def _torch_rows(root,folder,plan,request,manifest_path):
         and manifest.get('phase')=='complete' and manifest.get('pending_unique_keys')==0
         and manifest.get('selected_utterances')==len(ids), 'Torch fallback is incomplete or belongs to another job')
     parameters=manifest.get('parameters',{})
-    media.require(all(parameters.get(k)==v for k,v in POLICY.items()) and parameters.get('device')=='mps'
+    expected_policy={**POLICY,**({'seed':43} if request['binding'].get('mode')==EXPLICIT_MODE else {})}
+    media.require(all(parameters.get(k)==v for k,v in expected_policy.items()) and parameters.get('device')=='mps'
         and parameters.get('use_qwen_emo') is False and manifest.get('experimental_preview') is False,
-        'Fallback must be Torch25 FP32 seed42 reference emotion')
+        'Fallback must be the request-bound Torch25 FP32 seed42/explicit-seed43 reference emotion')
     native=manifest.get('utterances',[])
     media.require([r['segment_id'] for r in native]==ids, 'Fallback must contain exactly the selected groups')
     selected={g['group_id']:g for g in plan['tts_groups']};bindings=[]
@@ -214,14 +319,15 @@ def _torch_rows(root,folder,plan,request,manifest_path):
     return manifest_path,manifest,bindings
 
 
-def finish(root,folder,plan_path,base_stable_manifest,quality_path,fallback_manifest):
+def finish(root,folder,plan_path,base_stable_manifest,quality_path,fallback_manifest,*,mode=CONFIRMED_MODE):
     root,folder,plan,plan_path,base_path,base,audio=_inputs(root,folder,plan_path,base_stable_manifest)
-    quality_path,selected=_quality(root,folder,plan,plan_path,base_path,base,audio,quality_path)
+    quality_path,selected=_quality(root,folder,plan,plan_path,base_path,base,audio,quality_path,mode=mode)
     quality_record,_=_quality_snapshot(folder,quality_path)
     matches=[e for e in media.journal(folder)['entries'] if e['action']=='audio_regenerate'
         and e['binding'].get('plan')==media.record(folder,plan_path)
         and e['binding'].get('base_manifest')==media.record(folder,base_path)
-        and e['binding'].get('quality')==quality_record]
+        and e['binding'].get('quality')==quality_record
+        and e['binding'].get('mode',CONFIRMED_MODE)==mode]
     media.require(len(matches)==1, 'Missing/ambiguous acoustic reservation')
     entry=matches[0];directory,request=_request(folder,entry['token'])
     media.require(request['binding']==entry['binding'] and entry['binding']['base_audio']==audio
@@ -242,16 +348,23 @@ def finish(root,folder,plan_path,base_stable_manifest,quality_path,fallback_mani
             ('selected_utterances','initial_cache_hit_unique_keys','generated_unique_keys','run_wall_seconds','model_loaded') if k in base},
         'replaced_group_ids':request['group_ids'],'human_listened':False,'text_changed':False,
         'requires_new_alignment_and_quality_checks':True,'single_native_generation_claimed':False}
+    if mode in {UNCONFIRMED_MODE,EXPLICIT_MODE}:
+        composition['composition'].update(mode=mode,trigger_reason=UNCONFIRMED_REASON,
+            confirmed_acoustic_fault=False,content_confirmed=False)
     composition_path=directory/'composition_manifest.json';_write_once(composition_path,composition)
     selection={'schema':SCHEMA,'token':entry['token'],'binding':entry['binding'],
         'request':media.record(folder,directory/'request.json'),'composition':media.record(folder,composition_path),
         'fallback_manifest':media.record(folder,fallback_path),'fallback_audio':new_audio,
         'selected_group_ids':request['group_ids'],'human_listened':False,'text_changed':False,
         'requires_new_alignment_and_quality_checks':True}
+    if mode in {UNCONFIRMED_MODE,EXPLICIT_MODE}:
+        selection.update(mode=mode,confirmed_acoustic_fault=False,content_confirmed=False)
     selection_path=directory/'selection.json';_write_once(selection_path,selection)
     result={'schema':SCHEMA,'changed':True,'manifest':str(composition_path),'selection':str(selection_path),
         'group_ids':request['group_ids'],'outputs':[media.record(folder,selection_path),media.record(folder,composition_path)],
         'human_listened':False,'text_changed':False,'requires_new_alignment_and_quality_checks':True}
+    if mode in {UNCONFIRMED_MODE,EXPLICIT_MODE}:
+        result.update(mode=mode,confirmed_acoustic_fault=False,content_confirmed=False)
     media.finish_recovery(folder,entry['token'],result)
     return result
 

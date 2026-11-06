@@ -37,6 +37,10 @@ def apply_prior_reviews(root, folder, rows, updated, report):
     root, expected_folder = _folder(root, Path(folder).name)
     if Path(folder).absolute() != expected_folder:
         raise ValueError('旧审核复用任务位置不匹配')
+    mixed=report.get('review_method')=='machine_two_pass_plus_user_context_adoption'
+    if mixed:
+        from pipeline import validate_translations
+        validate_translations(rows,updated,report,folder=expected_folder)
     config_path = _safe(expected_folder, CONFIG)
     if not config_path.exists():
         return updated, report
@@ -45,6 +49,8 @@ def apply_prior_reviews(root, folder, rows, updated, report):
             or config.get('schema') != SCHEMA or not isinstance(config.get('rows'), dict)
             or not 1 <= len(config['rows']) <= 8):
         raise ValueError('旧审核复用配置不合法')
+    if mixed and set(config['rows']) & set(report['user_context_adoptions']):
+        raise ValueError('旧审核复用不能覆盖用户明确采纳的语境译法')
     source = _read(_safe(expected_folder, 'source.json'))
     source_path = Path(source['input'])
     if source_path.is_absolute():
@@ -66,7 +72,8 @@ def apply_prior_reviews(root, folder, rows, updated, report):
             or any(source_binding(row) != source_binding(after) for row, after in zip(rows, updated))):
         raise ValueError('旧审核复用前源行或行序已改变')
     if (report.get('translation_version') != VERSION or report.get('human_reviewed') is not False
-            or report.get('review_method') != 'two_pass_machine_review_and_numeric_invariants'):
+            or report.get('review_method') not in ('two_pass_machine_review_and_numeric_invariants',
+                                                  'machine_two_pass_plus_user_context_adoption')):
         raise ValueError('旧审核复用需要当前机器二审报告')
     lookup = {row['segment_id']: index for index, row in enumerate(rows)}
     verified = {}
@@ -169,4 +176,7 @@ def apply_prior_reviews(root, folder, rows, updated, report):
             summary['machine_reviewed_rows'] = sum(value.get('machine_reviewed') is True for value in metadata.values())
             summary['accepted_join_suggestions'] = sum(value.get('join_previous') is True for value in metadata.values())
         result_report['review_status'] = 'machine_second_pass_partial_continuity_review'
+    if mixed:
+        result_report['review_status']='machine_review_and_user_context_adoption_complete'
+        validate_translations(rows,result,result_report,folder=expected_folder)
     return result, result_report

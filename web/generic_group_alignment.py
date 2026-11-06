@@ -80,12 +80,13 @@ def normalize_factory(root):
     return normalize
 
 
-def audio_binding(group,native,manifest_path):
+def audio_binding(group,native,manifest_path,*,plan_path=None,job=None):
     path=Path(native['audio']).resolve();digest=sha(path);sidecar=path.with_suffix('.json');entry=read(sidecar)
     check(native['sha256']==entry['sha256']==digest,'Generated audio SHA mismatch')
     check(entry.get('schema') in ('native_mlx_whole_utterance_v1','continuous_utterance_v1'),'Unknown group generation provenance')
     content=entry['content'];check(content==native['content'] and entry['cache_key']==key(content),'Generation content/sidecar mismatch')
-    check(content['text_zh']==group['text_zh'] and content['effective_tts_text']==(group.get('tts_pronunciation_text') or group['text_zh']),
+    from user_voice_adoption_20261103 import pronunciation_matches
+    check(pronunciation_matches(group,content,digest,caller_job=job,plan_path=plan_path,manifest_path=manifest_path),
           'Generated group text/pronunciation differs from plan')
     check(content['reference_sha256']==group['reference']['sha256']==sha(group['reference']['path']),'Group reference SHA changed')
     check(native.get('speaker_id')==group['speaker_id'],'Generated group belongs to another speaker')
@@ -210,7 +211,7 @@ def choose_boundary(expected,character_boundary,words,normalize,duration):
 
 def make_alignment(root,plan_path,manifest_path,group,plan,manifest,observation=None,observation_path=None,cache_hit=False):
     native=next(r for r in manifest['utterances'] if r['segment_id']==group['group_id'])
-    audio=audio_binding(group,native,manifest_path);duration=audio['duration_s'];members=group['members']
+    audio=audio_binding(group,native,manifest_path,plan_path=plan_path,job=plan['job']);duration=audio['duration_s'];members=group['members']
     check(members and [m['segment_id'] for m in members]==group['member_ids'],'Original source members changed')
     receipt={'schema':SCHEMA,'status':STATUS,'group_id':group['group_id'],'member_ids':group['member_ids'],'job':plan['job'],
         'root':str(Path(root).resolve()),'plan':path_record(plan_path),'source_segments_sha256':plan['source_segments']['sha256'],
@@ -284,7 +285,7 @@ def align_job(root,plan_path,manifest_path,output,cache_dir=None,groups=None,pro
     check(selected.issubset({r['segment_id'] for r in manifest['utterances']}),'Missing generated group audio')
     for group in chosen:
         check(re.fullmatch(r'[A-Za-z0-9_.-]+',group['group_id']) is not None,'Unsafe group file identity')
-        native=next(r for r in manifest['utterances'] if r['segment_id']==group['group_id']);audio_binding(group,native,manifest_path)
+        native=next(r for r in manifest['utterances'] if r['segment_id']==group['group_id']);audio_binding(group,native,manifest_path,plan_path=plan_path,job=plan['job'])
     output.mkdir(parents=True,exist_ok=True)
     if not plan_only and (output/'alignment_manifest.json').is_file():
         try:
@@ -316,7 +317,7 @@ def align_job(root,plan_path,manifest_path,output,cache_dir=None,groups=None,pro
         observation=None;observation_path=None;hit=False
         try:
             if len(group['members'])>1:
-                native=next(r for r in manifest['utterances'] if r['segment_id']==group['group_id']);audio=audio_binding(group,native,manifest_path)
+                native=next(r for r in manifest['utterances'] if r['segment_id']==group['group_id']);audio=audio_binding(group,native,manifest_path,plan_path=plan_path,job=plan['job'])
                 observation,observation_path,hit=observer.observe(audio)
             receipt=make_alignment(root,plan_path,manifest_path,group,plan,manifest,observation,observation_path,hit)
         except (ValueError,KeyError,StopIteration) as error:

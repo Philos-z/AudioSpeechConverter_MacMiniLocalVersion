@@ -18,6 +18,7 @@ import shutil
 import signal
 import socket
 import subprocess
+import sys
 import threading
 import time
 from urllib.parse import parse_qs, quote, unquote, urlsplit
@@ -30,6 +31,7 @@ from source_language import normalize_language, source_language_metadata
 from failure_triage import (SOURCE_GATE, TRANSLATION_STAGE, checkpoint_marker,
     make_failure_record, persist_failure, public_failure, retry_message)
 from website_recovery import DEFAULT_POLICY, normalize_policy, public_recovery
+import task_takeover
 
 ID = re.compile(r'^web_\d{8}_\d{6}_[a-f0-9]{8}$')
 VIDEO_EXT = {'.mp4', '.mov', '.m4v', '.mkv', '.webm', '.avi', '.ts', '.mpeg', '.mpg', '.flv', '.wmv'}
@@ -67,12 +69,7 @@ def public_metrics(value):
 
 
 def atomic_json(path, value):
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_suffix('.pending')
-    temp.write_text(json.dumps(value, ensure_ascii=False, indent=2) + '\n')
-    temp.chmod(0o600)
-    temp.replace(path)
+    task_takeover.write_json(path, value)
 
 
 def safe_message(error):
@@ -124,11 +121,17 @@ class JobManager:
         for path in sorted(self.state.glob('web_*.json')):
             try:
                 job = json.loads(path.read_text())
-                if not ID.fullmatch(job['id']):
+                if (not ID.fullmatch(job['id']) or path.name != job['id'] + '.json'
+                        or job['id'] in self.jobs):
                     continue
+                if 'takeover' in job and not isinstance(job['takeover'], dict):
+                    job.update(status='failed', stage='failed', error='自动接管记录无效，已有成果保留。', updated_at=now())
+                    atomic_json(path, job)
                 if job['status'] == 'running':
-                    job.pop('failure_record',None)
-                    job.update(status='failed', stage='failed', error='上次服务已中断，已有成果已保留，可从断点继续。', updated_at=now())
+                    task_takeover.prepare_takeover(self.root, job)
+                    atomic_json(path, job)
+                if job['status'] == 'queued' and job.get('cancel_requested_at'):
+                    job.update(status='canceled', stage='canceled', updated_at=now())
                     atomic_json(path, job)
                 if job['status'] == 'queued':
                     self.pending.append(job['id'])
@@ -153,6 +156,7 @@ class JobManager:
             failure=public_failure(self.root,job)
             if failure:result['failure']=failure
         result['recovery'] = public_recovery(self.root, job['id'])
+        result['automatic_takeover'] = task_takeover.public_state(job)
         result['recovery']['policy_configured'] = 'website_recovery' in job.get('options', {})
         result['artifacts'] = [
             {'label': item['label'], 'kind': item.get('kind', 'file'),
@@ -196,12 +200,17 @@ class JobManager:
                 raise ValueError('任务编号重复，请重新提交。')
             job = {'id': job_id, 'title': str(title).strip()[:120] or '视频译配',
                    'status': 'queued', 'stage': 'queued', 'progress': 0,
+                   'queue_reason': 'submitted',
                    'created_at': now(), 'updated_at': now(), 'artifacts': [],
                    'options': {'max_output_height': 540, 'preserve_orientation': True,
                                'experimental_profile': DEFAULT_TTS_PROFILE, 'emotion_mode': 'reference',
                                'tts_grouping': DEFAULT_TTS_GROUPING,
                                'mastering_policy': DEFAULT_MASTERING_POLICY,
                                'voice_pilot_groups': 2,
+                               'restart_policy': task_takeover.POLICY,
+                               'autonomy_policy': 'evidence_first_v1',
+                               'autonomous_content_review': True,
+                               'speech_quality_policy': 'layered_full_content_v1',
                                'source_language': source_language, 'target_language': 'zh',
                                'episode_max_seconds': 1800, 'split_long_source': True,
                                'subtitles': 'zh_above_source', 'human_reviewed': False,
@@ -215,8 +224,11 @@ class JobManager:
                 job.update(input_path=str(path), source_sha256=source_sha256)
             elif source_url:
                 job['source_url'] = source_url
+                task_takeover.authorize_source_request(self.root, job)
             else:
                 raise ValueError('请先选择视频或填写链接。')
+            if input_path:
+                task_takeover.bind_source(self.root, job)
             self.save(job)
             self.jobs[job_id] = job
             self.cancel_events[job_id] = threading.Event()
@@ -328,6 +340,10 @@ class JobManager:
                            progress=min(99, job['progress']))
             elif details:
                 job['stage_details'] = details
+            if (job.get('options', {}).get('restart_policy') == task_takeover.POLICY
+                    and not job.get('takeover', {}).get('source_binding')):
+                try: task_takeover.bind_source(self.root, job)
+                except (OSError, ValueError): pass  # A URL download may still be incomplete.
             self.save(job)
 
     def cancel(self, job_id):
@@ -336,6 +352,11 @@ class JobManager:
             if job is None:
                 raise KeyError(job_id)
             if job['status'] in ACTIVE:
+                job['cancel_requested_at'] = now()
+                job.setdefault('takeover', {})['state'] = 'canceled'
+                # Persist cancellation BEFORE any child is signalled. A crash
+                # at this boundary must never resurrect a user-canceled task.
+                self.save(job)
                 self.cancel_events[job_id].set()
                 if job['status'] == 'queued':
                     job.update(status='canceled', stage='canceled', updated_at=now())
@@ -343,10 +364,9 @@ class JobManager:
                     job['stage'] = '正在停止当前步骤'
                 for process in tuple(self.processes.get(job_id, ())):
                     # A finished group leader can leave live descendants.
-                    try:
-                        os.killpg(process.pid, signal.SIGTERM)
-                    except ProcessLookupError:
-                        pass
+                    if process.poll() is None:
+                        try: os.killpg(process.pid, signal.SIGTERM)
+                        except ProcessLookupError: pass
                 self.save(job)
             return self.public(job)
 
@@ -383,8 +403,11 @@ class JobManager:
         job.setdefault('attempts', []).append({'ended_at': job.get('updated_at'),
                                               'status': job['status'], 'error': job.get('error')})
         job.update(status='queued', stage='queued', progress=0, error=None, updated_at=now())
+        job['queue_reason'] = 'manual_retry'
         job.pop('failure_record',None)
         job.pop('stage_details',None)
+        job.pop('cancel_requested_at', None)
+        job.setdefault('takeover', {}).update(state='ready', retry_at_unix=None)
         self.cancel_events[job_id] = threading.Event()
         self.save(job)
         # A queued cancellation may still have its old deque entry. Reuse must
@@ -522,7 +545,7 @@ class JobManager:
             return {'saved': True, 'rows': len(corrections), 'requires_proxy_review': True}
 
     def command(self, job_id, argv, cwd=None, env=None, on_line=None, timeout=None, should_abort=None):
-        if self.cancel_events[job_id].is_set():
+        if self.cancel_events[job_id].is_set() or self.stopping.is_set():
             raise Cancelled('任务已取消')
         if should_abort and should_abort():
             raise RuntimeError('并行分析另一项失败，未启动当前步骤')
@@ -538,9 +561,25 @@ class JobManager:
         log_dir = self.root / 'reports/web_app/jobs'
         log_dir.mkdir(parents=True, exist_ok=True)
         began = time.monotonic()
-        process = subprocess.Popen([str(x) for x in argv], cwd=cwd, env=run_env,
-                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                   start_new_session=True, bufsize=0)
+        command_id = uuid.uuid4().hex
+        receipt = task_takeover.runtime(self.root) / 'commands' / (command_id + '.json')
+        task_takeover.write_json(receipt.with_suffix('.lease.json'), {
+            'schema': 'owned_command_lease_v1', 'command_id': command_id, 'job_id': job_id,
+            'at': now(), 'parent_pid_information_only': os.getpid(),
+            'argv_sha256': hashlib.sha256(json.dumps([str(x) for x in argv]).encode()).hexdigest(),
+            'ownership': 'kernel_shared_lease_and_parent_pipe', 'pid_file_is_authority': False})
+        parent_read, parent_write = os.pipe()
+        try:
+            process = subprocess.Popen([sys.executable, '-B', str(Path(__file__).parent / 'task_takeover.py'),
+                '--guardian', '--root', str(self.root), '--parent-fd', str(parent_read),
+                '--receipt', str(receipt), '--', *[str(x) for x in argv]], cwd=cwd, env=run_env,
+                pass_fds=(parent_read,), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                start_new_session=True, bufsize=0)
+        except BaseException:
+            os.close(parent_write)
+            raise
+        finally:
+            os.close(parent_read)
         with self.lock:
             self.processes.setdefault(job_id, set()).add(process)
         selector = selectors.DefaultSelector()
@@ -595,15 +634,14 @@ class JobManager:
         finally:
             selector.close()
             process.stdout.close()
+            os.close(parent_write)
             with self.lock:
                 registered = self.processes.get(job_id)
                 if registered is not None:
                     registered.discard(process)
                     if not registered:self.processes.pop(job_id, None)
-            # Clean the owned process group even after its leader has exited;
-            # inherited stdout or a surviving helper must not outlive the job.
-            try: os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError: pass
+            # The guardian retains its kernel lease until its owned group has
+            # been stopped. Never signal a reaped PID or infer identity from it.
             process.wait()
         if self.cancel_events[job_id].is_set() or self.stopping.is_set():
             raise Cancelled('任务已取消')
@@ -611,7 +649,11 @@ class JobManager:
             raise RuntimeError('当前步骤用时过长，已停止并保留任务。')
         if aborted:
             raise RuntimeError('并行分析另一项失败，已停止当前步骤')
-        return {'returncode': process.returncode, 'stdout': '\n'.join(tail), 'elapsed_s': time.monotonic() - began}
+        outcome = task_takeover.read_json(receipt, {})
+        valid_outcome = (isinstance(outcome, dict) and outcome.get('schema') == 'owned_command_exit_v1'
+            and outcome.get('command_id') == command_id and type(outcome.get('returncode')) is int)
+        return {'returncode': outcome['returncode'] if valid_outcome else process.returncode,
+                'stdout': '\n'.join(tail), 'elapsed_s': time.monotonic() - began}
 
     def worker(self):
         while not self.stopping.is_set():
@@ -624,6 +666,25 @@ class JobManager:
                 job = self.jobs[job_id]
                 if job['status'] != 'queued':
                     continue
+                if job.get('cancel_requested_at'):
+                    job.update(status='canceled', stage='canceled', updated_at=now())
+                    self.save(job)
+                    continue
+                try: task_takeover.validate_queued_takeover(self.root, job)
+                except (ValueError, OSError, TypeError, KeyError) as error:
+                    job.update(status='failed', stage='failed', error=safe_message(error), updated_at=now())
+                    job.setdefault('takeover', {})['state'] = 'needs_attention'
+                    self.save(job)
+                    continue
+                retry_at = job.get('takeover', {}).get('retry_at_unix') or 0
+                if time.time() < retry_at or not task_takeover.children_quiet(self.root):
+                    job['stage'] = '等待旧步骤安全退出后自动继续'
+                    job.setdefault('takeover', {})['state'] = 'waiting'
+                    self.save(job)
+                    self.pending.append(job_id)
+                    self.condition.wait(timeout=.5)
+                    continue
+                job.setdefault('takeover', {})['state'] = 'running'
                 job.update(status='running', stage='准备素材', updated_at=now())
                 self.save(job)
             checkpoint_before=checkpoint_marker(self.root,job_id)
@@ -632,7 +693,7 @@ class JobManager:
                 result = run_job(self.root, dict(job),
                                  lambda stage, progress, details=None: self.update(job_id, stage, progress, details),
                                  lambda argv, **kw: self.command(job_id, argv, **kw),
-                                 self.cancel_events[job_id].is_set)
+                                 lambda: self.cancel_events[job_id].is_set() or self.stopping.is_set())
                 if self.cancel_events[job_id].is_set():
                     raise Cancelled('任务已取消')
                 artifacts = []
@@ -658,11 +719,21 @@ class JobManager:
                                source_sha256=archived['source_sha256'],
                                metrics=result.get('metrics', {}), duration_s=result.get('duration_s'),
                                warnings=result.get('warnings', []))
+                    job.setdefault('takeover', {})['state'] = 'completed'
                     for field in ('source_language', 'source_language_label', 'episode_count', 'episodes'):
                         if field in result:job[field] = result[field]
                     self.save(job)
             except Exception as error:
                 with self.lock:
+                    # A deliberate service stop pauses its running work; it is
+                    # distinct from the user's per-task Cancel button. The
+                    # stopped service never restarts itself. A later explicit
+                    # service start can validate and resume this running record.
+                    if self.stopping.is_set() and not job.get('cancel_requested_at'):
+                        job.update(status='running', stage='服务已停止，断点已保留', updated_at=now())
+                        job.setdefault('takeover', {})['state'] = 'service_stopped'
+                        self.save(job)
+                        continue
                     canceled = isinstance(error, Cancelled) or self.cancel_events[job_id].is_set()
                     failed_stage=job.get('stage','unknown')
                     self.attach_failure(job,error,failed_stage,checkpoint_before)
@@ -686,12 +757,19 @@ class JobManager:
         configured = all(paths.values())
         proxy_configured = paths['config/web_proxy.json']
         return {'version': VERSION, 'ready': configured and self.proxy_ok and bool(self.thread and self.thread.is_alive()),
+                'project_identity': hashlib.sha256(str(self.root).encode()).hexdigest(),
                 'configured': configured, 'worker': {'ready': bool(self.thread and self.thread.is_alive()), 'concurrency': 1},
                 'llm': {'configured': proxy_configured, 'ready': self.proxy_ok, 'model': self.proxy_model,
                         'provider': 'application_dedicated_proxy', 'text_only': True},
                 'compute': {'local': ['音频识别', '背景分离', '说话人分组', '中文配音', '混音', '字幕和视频导出'],
                             'cloud_via_proxy': ['翻译', '口语化', '机器复核']},
                 'queue': sum(j['status'] == 'queued' for j in self.jobs.values()),
+                'automatic_takeover': {'enabled_for_new_jobs': True,
+                    'waiting_for_previous_children': not task_takeover.children_quiet(self.root),
+                    'waiting_jobs': sum(task_takeover.public_state(j)['state'] == 'waiting' for j in self.jobs.values()),
+                    'supervised': bool(getattr(self, 'supervised', False)),
+                    'service': task_takeover.supervision_summary(self.root),
+                    'login_autostart': False},
                 'limits': {'upload_bytes': MAX_UPLOAD, 'episode_seconds': 1800,
                            'split_long_source': True, 'source_language_auto': True,
                            'output_video_bytes': 50000000, 'reserved_gib': 8},
@@ -835,6 +913,11 @@ class Handler(BaseHTTPRequestHandler):
             with self.manager.lock:
                 snapshot = self.manager.health()
             return self.json_response(200, snapshot)
+        if path == '/api/liveness':
+            return self.json_response(200, {'version': VERSION,
+                'project_identity': hashlib.sha256(str(self.manager.root).encode()).hexdigest(),
+                'worker_alive': bool(self.manager.thread and self.manager.thread.is_alive()),
+                'stopping': self.manager.stopping.is_set()})
         if path == '/api/jobs':
             with self.manager.lock:
                 jobs = sorted(self.manager.jobs.values(), key=lambda x: x['created_at'], reverse=True)
@@ -996,9 +1079,23 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def make_server(root, host='0.0.0.0', port=8766, start_worker=True, static_root=None, lan_host=None):
-    server = ThreadingHTTPServer((host, port), Handler)
+    instance = task_takeover.InstanceLock(task_takeover.runtime(root) / 'server.lock')
+    try:
+        server = ThreadingHTTPServer((host, port), Handler)
+    except BaseException:
+        instance.close()
+        raise
     server.daemon_threads = True
-    server.manager = JobManager(root, start_worker=start_worker)
+    try:
+        server.manager = JobManager(root, start_worker=start_worker)
+    except BaseException:
+        server.server_close(); instance.close()
+        raise
+    close = server.server_close
+    def close_owned_server():
+        try: close()
+        finally: instance.close()
+    server.server_close = close_owned_server
     server.static_root = Path(static_root or Path(__file__).parent / 'static').resolve()
     server.allowed_hosts = {'127.0.0.1', 'localhost', lan_host or os.environ.get('PHILOS_LAN_HOST', 'localhost')}
     return server
@@ -1010,6 +1107,7 @@ def main():
     p.add_argument('--host', default='0.0.0.0')
     p.add_argument('--port', type=int, default=8766)
     p.add_argument('--lan-host', default=os.environ.get('PHILOS_LAN_HOST'))
+    p.add_argument('--control-generation')
     a = p.parse_args()
     if not a.lan_host:
         try:
@@ -1019,19 +1117,36 @@ def main():
         except (OSError,ValueError,TypeError):a.lan_host='localhost'
     os.umask(0o077)
     server = make_server(a.root, a.host, a.port, lan_host=a.lan_host)
+    server.manager.supervised = bool(a.control_generation)
     def stop(signum, frame):
         server.manager.stopping.set()
         with server.manager.condition:
             server.manager.condition.notify_all()
-        for job_id, job in list(server.manager.jobs.items()):
-            if job['status'] == 'running': server.manager.cancel(job_id)
         threading.Thread(target=server.shutdown, daemon=True).start()
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
+    def monitor_control():
+        while not server.manager.stopping.wait(.2):
+            try:
+                control = task_takeover.read_json(task_takeover.runtime(a.root) / 'control.json', {})
+                if a.control_generation and (control.get('desired') != 'running'
+                        or control.get('generation') != a.control_generation):
+                    stop(None, None)
+                    return
+            except (ValueError, OSError):
+                # Invalid local service intent is a stop, never permission to
+                # continue spawning or automatically restart anything.
+                stop(None, None)
+                return
+    if a.control_generation:
+        threading.Thread(target=monitor_control, daemon=True).start()
     print(json.dumps({'service': VERSION, 'listen': a.host, 'port': a.port, 'started_at': now()}), flush=True)
     try:
         server.serve_forever(poll_interval=.5)
     finally:
+        server.manager.stopping.set()
+        with server.manager.condition: server.manager.condition.notify_all()
+        if server.manager.thread: server.manager.thread.join(timeout=8)
         server.server_close()
 
 

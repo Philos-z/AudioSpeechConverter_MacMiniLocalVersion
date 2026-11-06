@@ -25,7 +25,7 @@ import failure_triage
 import website_recovery
 
 POLICY = {'enabled': True, 'source_mode': 'contextual', 'picture_holds': True, 'reserve_gib': 8}
-JID = 'web_20261023_000001_deadbeef'
+JID = 'web_20990101_120000_00000001'
 EXHAUSTED = {'used': 6, 'max': 6, 'remaining': 0, 'exhausted': True}
 
 
@@ -96,7 +96,7 @@ class RecoveryBudgetRoutingTests(unittest.TestCase):
 
     def test_exhausted_text_budget_allows_only_known_local_resume_categories(self):
         categories = ('storage', 'tts', 'alignment', 'timing', 'picture',
-                      'source_review', 'translation_review', 'audio', 'unknown', 'transport', None)
+                      'source_review', 'translation_review', 'reference', 'audio', 'unknown', 'transport', None)
         for category in categories:
             with self.subTest(category=category):
                 self.reset_job(); before = copy.deepcopy(self.job)

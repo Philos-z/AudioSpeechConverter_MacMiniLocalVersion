@@ -1,12 +1,14 @@
 """One bounded, local post-AAC mastering fallback. No TTS or picture encoding."""
 import argparse
 import copy
+import hashlib
 import json
 import math
 import os
 from pathlib import Path
 import shutil
 import subprocess
+import struct
 import time
 import wave
 
@@ -126,10 +128,12 @@ def bound_inputs(root,folder,output):
                       'Accepted group text/person changed')
         audio=media.job_file(root,row['audio']);side=media.job_file(root,row['generation_sidecar'])
         entry=media.read(side);content=entry['content'];ref=media.job_file(root,group['reference']['path'])
+        from user_voice_adoption_20261103 import pronunciation_matches, MANIFEST as USER_AUDIO_MANIFEST
         media.require(media.sha(audio)==row['audio_sha256']==entry['sha256']
             and media.sha(side)==row['generation_sidecar_sha256']
             and content['text_zh']==group['text_zh']
-            and content['effective_tts_text']==(group.get('tts_pronunciation_text') or group['text_zh'])
+            and pronunciation_matches(group,content,entry['sha256'],caller_job=folder.name,
+                plan_path=plan_path,manifest_path=folder/USER_AUDIO_MANIFEST)
             and content['reference_sha256']==group['reference']['sha256']==media.sha(ref),
             'Accepted audio/reference identity changed')
         proofs.extend([{'path':str(audio),'sha256':entry['sha256']},{'path':str(side),'sha256':media.sha(side)}])
@@ -219,6 +223,87 @@ def existing_result(root,folder,output):
     return result
 
 
+def delivery_identity(folder,binding,edl):
+    """Real time/audio identity; paths, containers and code cannot reset once."""
+    import numpy as np
+    path=media.checked_record(folder,binding['files']['premix.wav'])
+    digest=hashlib.sha256()
+    # The formal premix writer always emits stereo48k FLOAT32 RIFF/WAVE.
+    # Parse its chunks on the ASR runtime, which has no soundfile dependency.
+    with path.open('rb') as stream:
+        header=stream.read(12)
+        media.require(len(header)==12 and header[:4]==b'RIFF' and header[8:]==b'WAVE', 'Invalid premix WAV container')
+        end=struct.unpack('<I',header[4:8])[0]+8
+        media.require(12<=end<=path.stat().st_size, 'Incomplete premix RIFF')
+        fmt=None;data=None
+        while stream.tell()+8<=end:
+            name,size=struct.unpack('<4sI',stream.read(8));start=stream.tell()
+            media.require(start+size<=end, 'Incomplete premix WAV chunk')
+            if name==b'fmt ':
+                media.require(fmt is None and 16<=size<=4096, 'Invalid premix WAV format')
+                fmt=stream.read(size)
+            if name==b'data':
+                media.require(data is None, 'Duplicate premix PCM chunk');data=(start,size)
+            stream.seek(start+size+(size%2))
+        media.require(fmt is not None and data is not None, 'Missing premix format or PCM')
+        kind,channels,rate,byte_rate,align,bits=struct.unpack('<HHIIHH',fmt[:16])
+        if kind==65534:
+            media.require(len(fmt)>=40 and fmt[28:40]==bytes.fromhex('00001000800000aa00389b71'), 'Invalid extended premix WAV')
+            kind=struct.unpack('<I',fmt[24:28])[0]
+        media.require(kind==3 and bits==32 and channels==2 and rate==48000
+            and align==8 and byte_rate==384000 and data[1]==edl['frames']*1920*8, 'Delivery PCM clock/format changed')
+        pcm={'sample_rate':rate,'channels':channels,'frames':data[1]//align}
+        stream.seek(data[0]);remaining=data[1]
+        while remaining:
+            block=stream.read(min(65536*align,remaining))
+            media.require(block and len(block)%align==0, 'Incomplete delivery premix PCM')
+            values=np.frombuffer(block,dtype='<f4').copy()
+            media.require(np.isfinite(values).all(), 'Nonfinite delivery premix PCM')
+            values[values==0]=0.
+            digest.update(values.tobytes());remaining-=len(block)
+    pcm['sha256']=digest.hexdigest()
+    clip_keys=('kind','segment_ids','source_member_ids','source_start_s','source_end_s',
+        'source_duration_s','freeze_s','output_start_s','output_end_s','frames')
+    voice_keys=('group_id','member_ids','speaker_id','text_zh','text_de','audio_sha256',
+        'audio_frames','sample_rate','speech_s','output_start_s','output_speech_end_s','output_end_s','clip_index')
+    cue_keys=('segment_id','group_id','text_zh','text_de','audio_start_s','audio_end_s',
+        'output_start_s','output_speech_end_s','output_end_s','clip_index')
+    def numbers(value):
+        if type(value) in (int,float):return float(value) if value else 0.
+        if isinstance(value,dict):return {k:numbers(v) for k,v in value.items()}
+        if isinstance(value,list):return [numbers(v) for v in value]
+        return value
+    return media.key(numbers({'source_sha256':binding['source_video_sha256'],
+        'frames':edl['frames'],'fps':edl['fps'],'duration_s':edl['duration_s'],
+        'clips':[{k:c.get(k) for k in clip_keys} for c in edl['clips']],
+        'voices':[{k:u.get(k) for k in voice_keys} for u in edl['utterances']],
+        'cues':[{k:c.get(k) for k in cue_keys} for c in edl['subtitle_cues']], 'pcm':pcm}))
+
+
+def enforce_delivery_once(folder,binding,edl,once):
+    entries=[e for e in media.journal(folder)['entries'] if e['action']=='encoded_master_repair']
+    if not entries:return
+    identity=delivery_identity(folder,binding,edl)
+    for entry in entries:
+        previous=entry['binding']['input'];old_once=entry['binding']['once']
+        media.require(entry['token']==media.key({'action':'encoded_master_repair','binding':entry['binding']}),
+            'Original delivery recovery token changed')
+        if entry.get('result',{}).get('changed') is True:
+            media.require(entry['result'].get('original_input')==previous,
+                'Original completed delivery input changed')
+        media.require(old_once=={'source_video_sha256':previous['source_video_sha256'],
+            'edl_sha256':previous['files']['edit_decisions.json']['sha256'],
+            'premix_sha256':previous['files']['premix.wav']['sha256'],
+            'original_video_sha256':previous['files']['group_zh_candidate.mp4']['sha256']},
+            'Original delivery once binding changed')
+        old_edl=media.read(media.checked_record(folder,previous['files']['edit_decisions.json']))
+        if delivery_identity(folder,previous,old_edl)==identity:
+            media.require(entry['status']=='pending'
+                and entry['binding']=={'once':once,'input':binding}
+                and entry['token']==media.key({'action':'encoded_master_repair','binding':entry['binding']}),
+                'Encoded master fallback already used for this actual delivery')
+
+
 def recover(root,folder,output):
     root,folder=media.scope(root,folder);output=Path(output).absolute()
     media.job_file(folder,output/'group_zh_candidate.mp4')
@@ -238,13 +323,15 @@ def recover(root,folder,output):
             'edl_sha256':mixed['edl_sha256'],'levels_before':before,'reason':'actual_encoded_levels_already_in_range'}
         media.save(output/'audio_master_recovery.json',result)
         return result
-    reserve_bytes=8*GIB+edl['frames']*1920*6+math.ceil(edl['duration_s']*48000)+video.stat().st_size+64*1024**2
+    from delivery_archive import archive_reserve
+    job_path=media.job_file(root,root/'web/state/jobs'/(folder.name+'.json'),exists=False)
+    job=media.read(job_path) if job_path.exists() else {}
+    reserve=archive_reserve(job) if job.get('id')==folder.name and job.get('source_sha256')==binding['source_video_sha256'] else 8*GIB
+    reserve_bytes=reserve+edl['frames']*1920*6+math.ceil(edl['duration_s']*48000)+video.stat().st_size+64*1024**2
     space(output,reserve_bytes)
     once={'source_video_sha256':binding['source_video_sha256'],'edl_sha256':mixed['edl_sha256'],
           'premix_sha256':master['premix_sha256'],'original_video_sha256':media.sha(video)}
-    for entry in media.journal(folder)['entries']:
-        if entry['action']=='encoded_master_repair':
-            media.require(entry['binding'].get('once')==once,'Encoded master fallback already used for this delivery')
+    enforce_delivery_once(folder,binding,edl,once)
     reservation=media.reserve_recovery(folder,'encoded_master_repair',{'once':once,'input':binding})
     media.require(reservation['status']=='pending','Fixed encoded master fallback already completed/failed')
     directory=media.job_file(folder,'tts/encoded_master_recovery/'+reservation['token'],exists=False)

@@ -410,14 +410,36 @@ def wav_metrics(path, expected):
     db = 20 * np.log10(np.maximum(rms, 1e-8))
     dynamic = float(np.percentile(db, 95) - np.percentile(db, 5))
     zcr = float(np.mean(np.diff(np.signbit(signal)) != 0)) if len(signal) > 1 else 0.
+    # These measurements describe the actual unmodified PCM. Silence is
+    # interior-only: ordinary leading/trailing pauses are not missing speech.
+    silent = db < -55.
+    audible = np.flatnonzero(~silent)
+    longest_silence = 0
+    if audible.size:
+        interior = silent[audible[0]:audible[-1] + 1]
+        edges = np.flatnonzero(np.diff(np.r_[False, interior, False].astype(int)))
+        longest_silence = int(max(edges[1::2] - edges[::2], default=0))
+    clipped = np.abs(signal) >= 1. - 2. / (2 ** (width * 8 - 1))
+    edges = np.flatnonzero(np.diff(np.r_[False, clipped, False].astype(int)))
+    longest_clip = int(max(edges[1::2] - edges[::2], default=0))
     return {'frames': frames, 'sample_rate': rate, 'channels': channels, 'sample_width': width,
         'finite_samples': True, 'energy_dynamic_range_db': dynamic, 'zero_crossing_rate': zcr,
         'acoustically_suspicious': dynamic < 12.,
-        'peak': float(np.max(np.abs(signal)))}
+        'peak': float(np.max(np.abs(signal))),
+        'rms_dbfs': float(20 * np.log10(max(float(np.sqrt(np.mean(signal * signal))), 1e-8))),
+        'silent_fraction': float(np.mean(silent)),
+        'longest_internal_silence_s': longest_silence * block / rate,
+        'clipped_fraction': float(np.mean(clipped)), 'longest_clipped_run_s': longest_clip / rate}
 
 
-def audio_quality(root, plan_path, manifest_path, output, observer=None, normalize=None):
+def audio_quality(root, plan_path, manifest_path, output, observer=None, normalize=None,
+                  policy='legacy_suspects_v1', medium_observer=None):
     """CPU only. ASR only suspects, with no target/prompt, never a listening approval."""
+    if policy == 'layered_full_content_v1':
+        from speech_content_quality import audio_quality as complete_quality
+        return complete_quality(root, plan_path, manifest_path, output,
+            observer=observer, medium_observer=medium_observer, normalize=normalize)
+    require(policy == 'legacy_suspects_v1', 'Unknown speech quality policy')
     root = Path(root).resolve()
     plan_path = Path(plan_path).absolute()
     plan = read(plan_path)
@@ -620,13 +642,15 @@ def main():
     quality = commands.add_parser('audio-quality')
     for name in ('root', 'plan', 'manifest', 'output'):
         quality.add_argument('--' + name, type=Path, required=True)
+    quality.add_argument('--policy', choices=('legacy_suspects_v1', 'layered_full_content_v1'),
+                         default='legacy_suspects_v1')
     picture = commands.add_parser('picture-holds')
     for name in ('root','plan','source','edl','audit','output'):
         picture.add_argument('--'+name,type=Path,required=True)
     picture.add_argument('--policy-json',required=True)
     args = parser.parse_args()
     if args.command == 'audio-quality':
-        result = audio_quality(args.root, args.plan, args.manifest, args.output)
+        result = audio_quality(args.root, args.plan, args.manifest, args.output, policy=args.policy)
         print(json.dumps({'status': result['status'], 'checked_utterances': result['checked_utterances'],
             'needs_repair_ids': result['needs_repair_ids'], 'output': str(args.output.resolve())}, ensure_ascii=False))
     elif args.command == 'picture-holds':
