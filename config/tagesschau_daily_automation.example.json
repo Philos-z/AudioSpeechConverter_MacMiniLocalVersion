@@ -1,0 +1,28 @@
+{
+  "schema": "tagesschau_daily_automation_config_v1",
+  "root": ".",
+  "timezone": "Europe/Berlin",
+  "daily_local_time": "20:30",
+  "listing_url": "https://www.tagesschau.de/multimedia",
+  "selection": "latest_regular_tagesschau_by_official_broadcast_time",
+  "quality_label": "SD 270p",
+  "expected_source_dimensions": [
+    480,
+    270
+  ],
+  "daily_automation_id": "",
+  "monitor_automation_id": "",
+  "monitor_interval_minutes": 5,
+  "target_thread_id": "",
+  "api_base": "http://127.0.0.1:8766",
+  "state_path": "web/state/tagesschau_daily_automation.json",
+  "runbook_path": "docs/tagesschau_daily_automation.md",
+  "notification": {
+    "provider": "Outlook Email",
+    "to": "",
+    "kind": "completion_only",
+    "attachment": false,
+    "save_to_sent_items": true
+  },
+  "new_job_reserve_gib": 8
+}

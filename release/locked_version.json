@@ -1,7 +1,7 @@
 {
   "schema": "source_only_locked_release_v1",
   "date": "2026-11-06",
-  "origin_deployment": "source_only_preoptimization_sync_20261106",
+  "origin_deployment": "source_only_workflow_optimization_20261106",
   "production_profile": "hybrid-gpt-preserve-25-pad-eager",
   "cfm_steps": 25,
   "seed": 42,
@@ -34,7 +34,8 @@
     "Release regression fixtures use synthetic data; runtime tasks, actual configurations and engineering evidence stay local.",
     "Synchronized generic whole-script semantic review, layered full-speech verification, complete-source acquisition, speaker-reference boundaries and bounded supervised service takeover.",
     "Historical task-specific continuations, editorial decisions and voice selections are public fail-closed adapters with no private registrations; unsupported present credentials are refused and ordinary manifest paths pass through unchanged.",
-    "Retained source-only allowlist, submodule pins and existing portable validators; source-derived news-case tests remain local and public fixtures are synthetic."
+    "Retained source-only allowlist, submodule pins and existing portable validators; source-derived news-case tests remain local and public fixtures are synthetic.",
+    "Share strict legacy/current recovery request identities and validate saved auxiliary evidence; stop fully bound local guard failures before new evidence-first text reservations. Add a GET-only deterministic daily queue projection with generation-plus-SHA compare-and-swap and no business-action executor."
   ],
   "excluded": [
     "actual Proxy service/configuration/credentials/endpoints",
@@ -42,7 +43,7 @@
     "task state/receipts/reports except model identity lock",
     "model weights/cache/virtual environments/bundled binaries"
   ],
-  "validation_scope": "784 source tests passed in the prepared macOS media environment, using synthetic offline fixtures and temporary localhost HTTP services. All web modules import, Python AST, JavaScript syntax and git diff whitespace checks pass. No model inference, production task/service restart, production source modification, credentials or account connectors are included. This is a source-only preoptimization baseline, not verification of a fresh machine, historic private tasks, all-source unattended reliability or human listening.",
+  "validation_scope": "842 source regression methods passed in the prepared macOS environment, including 25 new recovery evidence cases and 33 new daily tick cases. Independent local acceptance additionally covers 16 adversarial workflow boundaries and privacy of all eight changed/new source files. Python AST, JavaScript syntax and whitespace checks pass. Public fixtures are synthetic; no models or production jobs are run by these tests. Public code retains private fail-closed adapters and excludes concurrent task-specific news rules. Tests do not establish fresh-machine setup, all-source unattended completion, full-video performance or human listening acceptance.",
   "files": [
     {
       "path": ".gitattributes",
@@ -125,6 +126,11 @@
       "sha256": "3244a5edae7b44f35debe1fc8a061ceb0122988043e1043cf43d6a621ff3a8ee"
     },
     {
+      "path": "config/tagesschau_daily_automation.example.json",
+      "bytes": 811,
+      "sha256": "a9174b74cdd57b6e5aea479be11bf4f44ba84ed3670b12b44050a1273e562d99"
+    },
+    {
       "path": "config/web_proxy.example.json",
       "bytes": 53,
       "sha256": "98f90a009c16a314aed0571be11098b8d57b5c1dd437018c7b60baa6009146eb"
@@ -153,6 +159,11 @@
       "path": "docs/WEBSITE_RECOVERY.md",
       "bytes": 6401,
       "sha256": "74f71f713a0851729dcc048d6886532c70d54128f5daa7fefc7bac64312b58e5"
+    },
+    {
+      "path": "docs/WORKFLOW_RELIABILITY.md",
+      "bytes": 3077,
+      "sha256": "63c096d2f04177e873fe1efb090058b5edb8bd63edb84596dc90d55dab747082"
     },
     {
       "path": "reports/models.lock.json",
@@ -580,6 +591,11 @@
       "sha256": "81ad3d1ba65a2b3315c6ea4ffffda8059808752a762cc60bfa3f3fb106b78ae2"
     },
     {
+      "path": "tests/test_recovery_evidence_preflight.py",
+      "bytes": 19634,
+      "sha256": "5f1af48440d803052fc03a38d9c94876609782640b6a1798962c32b6b9dfd5b3"
+    },
+    {
       "path": "tests/test_reference_failure_diagnosis.py",
       "bytes": 5365,
       "sha256": "cd29f3cfea449dab645f3da1b9cd9d388453303b38dd1d68ff6d94c60b788e51"
@@ -688,6 +704,11 @@
       "path": "tests/test_tagesschau_daily_discovery_independent.py",
       "bytes": 8933,
       "sha256": "0acd04943f01ceb050f2dd3d95d2971b75cb2a96de7c81a2ef5cb4a791e8cbee"
+    },
+    {
+      "path": "tests/test_tagesschau_daily_tick.py",
+      "bytes": 29647,
+      "sha256": "7f32814b9faf69c66cdce646022d6623e9d11476abe4948c682245a2899ee985"
     },
     {
       "path": "tests/test_takeover_adversarial.py",
@@ -821,8 +842,8 @@
     },
     {
       "path": "web/failure_triage.py",
-      "bytes": 43492,
-      "sha256": "5b870ebf2ce1a79e40004cbef1d5c0ef48840052e3ad7e9f99a3aebc930eb4ad"
+      "bytes": 45198,
+      "sha256": "8668e23bc5f11630ac72a0f28dbc8d8a0ec769d8c90c467cca1fc2e83c59c99e"
     },
     {
       "path": "web/generic_group_alignment.py",
@@ -1000,6 +1021,16 @@
       "sha256": "472dfcb41f69c9305af9fb49a8e0bd966a8b277167b06f6c88cd08d824bbd797"
     },
     {
+      "path": "web/tagesschau_daily_state.py",
+      "bytes": 34935,
+      "sha256": "aedd903f4ee37be0b689915a3f1da027d784aa30be01cebb847eac1d3ff7fd89"
+    },
+    {
+      "path": "web/tagesschau_daily_tick.py",
+      "bytes": 3338,
+      "sha256": "2e3d48e12cefd9a0fc5077894bdbc9f9e57722cf9e6bb531a28553f72c4efa35"
+    },
+    {
       "path": "web/tagesschau_editorial_20261104.py",
       "bytes": 2468,
       "sha256": "2b2354032d4e03ec276301cf255ccbacd77607a302942345a62f8c8bd554fdaa"
@@ -1061,8 +1092,8 @@
     },
     {
       "path": "web/translation_recovery.py",
-      "bytes": 89958,
-      "sha256": "3d3668c0094cb9eab351552fdc910f6b0caee7b0dd031e3e459fe11f50c4925d"
+      "bytes": 95559,
+      "sha256": "a99857fe357b22f37e05cc2ed8f6e1e5abaa84f1d06cca41bf5840e3d1b1f0d6"
     },
     {
       "path": "web/translation_reuse.py",
@@ -1152,7 +1183,7 @@
     ],
     "opacity": 0.55
   },
-  "release_id": "preoptimization-source-baseline-2026-11-06",
+  "release_id": "workflow-reliability-2026-11-06",
   "previous_release_tag": "philos-club-serif-2026-10-21",
   "current_release_tag": null,
   "website_recovery": {

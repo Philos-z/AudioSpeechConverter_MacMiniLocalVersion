@@ -268,7 +268,9 @@ def _local_translation_failure(root,job,folder,rows,by_id):
     if not rows:return None
     try:
         import website_recovery as recovery
-        from translation_recovery import pending,source_pending
+        from translation_recovery import (pending,source_pending,request_fingerprint,
+            request_code_identity,validate_request_auxiliary_refs,_autonomous_report_reference,
+            REQUEST_CODE_FILES)
         rejected=pending(folder,rows)
         source_ids=set(source_pending(folder,rows))
         ids=[row['segment_id'] for row in rows if row.get('segment_id') in set(rejected)|source_ids]
@@ -281,21 +283,44 @@ def _local_translation_failure(root,job,folder,rows,by_id):
                     or not set(event['segment_ids'])&set(ids)):continue
             evidence=recovery._safe(folder,'revisions/source_review_v1/evidence/translation_'+event['id'])
             request=_read(recovery._safe(evidence,'request.json'),{})
+            try:
+                if (request_fingerprint(request)!=event['input_fingerprint']
+                        or request.get('code')!=request_code_identity(root,request.get('code'))):continue
+                saved=event.get('saved_review')
+                if saved is not None and (not isinstance(saved,dict)
+                        or set(saved)!={'request_sha256','editor_sha256','audit_sha256'}
+                        or any(_sha(recovery._safe(evidence,name+'.json'))!=saved[name+'_sha256']
+                               for name in ('request','editor','audit'))):continue
+                validate_request_auxiliary_refs(folder,event,request)
+                if request.get('autonomous_content_review'):
+                    if request['autonomous_content_review']!=_autonomous_report_reference(folder):continue
+            except (OSError,ValueError,TypeError,KeyError,AttributeError,recovery.RecoveryReviewRequired):
+                # Invalid auxiliary evidence cannot turn into a new cause or
+                # erase budget already established by another current event.
+                continue
             if (not isinstance(request,dict) or request.get('schema')!='translation_rejection_recovery_v1'
                     or request.get('action')!='translation'
-                    or recovery._hash({k:v for k,v in request.items() if k!='items'})!=event['input_fingerprint']
                     or request.get('input_rows_sha256')!=recovery._hash(rows)
                     or request.get('source_sha256')!=job.get('source_sha256')
                     or request.get('policy')!=policy
                     or request.get('source_revision')!=_sha(folder/'source_plan_revision.json')
                     or request.get('quality_notes_sha256')!=_sha(folder/'translation/source_quality_notes.json')
-                    or request.get('independent_content_review_sha256')!=_sha(folder/'translation/independent_content_review.json')
-                    or request.get('code')!={name:_sha(Path(root)/'web'/name) for name in
-                        ('translation_recovery.py','source_audio_recheck.py','proxy_client.py','numeric_calendar_context.py')}):continue
+                    or request.get('independent_content_review_sha256')!=_sha(folder/'translation/independent_content_review.json')):continue
             items=request.get('items')
             if (not isinstance(items,list) or [item.get('id') for item in items if isinstance(item,dict)]!=event['segment_ids']
                     or any(item.get('id') not in by_id or item.get('text_source')!=by_id[item['id']].get('text_de')
                            for item in items)):continue
+            from proxy_client import source_binding
+            indexes={row['segment_id']:index for index,row in enumerate(rows)}
+            current_contract=set(request['code'])==set(REQUEST_CODE_FILES)
+            def item_current(item):
+                sid=item['id'];index=indexes[sid];row=by_id[sid]
+                expected={'source_binding':source_binding(row),
+                    'previous_context':[r['text_de'] for r in rows[max(0,index-2):index]],
+                    'next_context':[r['text_de'] for r in rows[index+1:index+3]]}
+                return all((key in item or not current_contract)
+                    and (key not in item or item[key]==value) for key,value in expected.items())
+            if not all(item_current(item) for item in items):continue
             bound.append((event,evidence))
         latest=bound[-1] if bound else None
         same_input=(sum(event['input_fingerprint']==latest[0]['input_fingerprint']

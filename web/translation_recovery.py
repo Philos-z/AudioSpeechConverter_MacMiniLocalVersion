@@ -18,6 +18,102 @@ class LocalGuardPending(recovery.RecoveryReviewRequired):
         self.checks = checks
 
 
+REQUEST_CODE_FILES = ('translation_recovery.py', 'source_audio_recheck.py',
+                      'proxy_client.py', 'numeric_calendar_context.py',
+                      'source_fraction_consensus.py')
+_REQUEST_CODE_SETS = (frozenset(REQUEST_CODE_FILES[:-1]), frozenset(REQUEST_CODE_FILES))
+
+
+def request_code_identity(root, recorded=None):
+    """Current hashes for exactly the supported legacy/current code contracts.
+
+    This does not authenticate an approval or replenish a recovery budget.
+    Old saved approvals may still be rechecked by the existing replay entry;
+    only current-failure diagnostics compare these hashes with current code.
+    """
+    names = REQUEST_CODE_FILES if recorded is None else recorded
+    if not isinstance(names, (dict, tuple)) or frozenset(names) not in _REQUEST_CODE_SETS:
+        raise ValueError('恢复请求代码身份集合不合法')
+    if isinstance(names, dict) and any(value is not None and
+            (not isinstance(value, str) or not recovery._SHA.fullmatch(value))
+            for value in names.values()):
+        raise ValueError('恢复请求代码SHA不合法')
+    root = Path(root)
+    return {name: recovery._file_hash(root / 'web', name) for name in names}
+
+
+def request_fingerprint(request):
+    """Hash the persisted request identity without its post-reservation data.
+
+    The optional source-window refs are auxiliary only for an actual whole
+    review request. Their files/SHA are verified by the consuming entry; this
+    helper never drops unknown identity fields or changes recorded counters.
+    """
+    if not isinstance(request, dict):
+        raise ValueError('恢复请求身份不合法')
+    code = request.get('code')
+    if not isinstance(code, dict) or frozenset(code) not in _REQUEST_CODE_SETS or any(
+            value is not None and (not isinstance(value, str) or not recovery._SHA.fullmatch(value))
+            for value in code.values()):
+        raise ValueError('恢复请求代码身份不合法')
+    identity = {key: value for key, value in request.items() if key != 'items'}
+    if 'source_recheck_records' in request:
+        whole = request.get('autonomous_content_review')
+        refs = request['source_recheck_records']
+        items = request.get('items')
+        if (not isinstance(whole, dict) or set(whole) != {'path', 'sha256'}
+                or not isinstance(whole.get('path'), str)
+                or not recovery._SHA.fullmatch(str(whole.get('sha256', '')))
+                or not isinstance(items, list) or not items
+                or any(not isinstance(item, dict) or not isinstance(item.get('id'), str) for item in items)
+                or len({item['id'] for item in items}) != len(items)
+                or not isinstance(refs, dict) or set(refs) != {item['id'] for item in items}
+                or any(not isinstance(ref, dict) or set(ref) != {'path', 'sha256'}
+                    or not isinstance(ref.get('path'), str)
+                    or not recovery._SHA.fullmatch(str(ref.get('sha256', '')))
+                    for ref in refs.values())):
+            raise ValueError('整稿恢复源窗引用不完整')
+        identity.pop('source_recheck_records')
+    return recovery._hash(identity)
+
+
+def validate_request_auxiliary_refs(folder, event, request):
+    """Bind non-identity refs to their original immutable files, not a new report.
+
+    Saved replay separately verifies every candidate and complete audio window.
+    These refs cannot redirect that reader or silently contradict its files.
+    """
+    if not request.get('autonomous_content_review') and 'source_recheck_records' not in request:
+        return
+    request_fingerprint(request)
+    whole=request.get('autonomous_content_review');refs=request.get('source_recheck_records')
+    if not isinstance(whole,dict) or not isinstance(refs,dict):
+        raise recovery.RecoveryReviewRequired('整稿恢复缺少原始证据引用')
+    relative=Path(whole['path'])
+    if (relative.parent!=Path('translation/autonomous_content_review/history')
+            or relative.suffix!='.json' or not recovery._SHA.fullmatch(relative.stem)):
+        raise recovery.RecoveryReviewRequired('整稿恢复引用不是原不可变快照')
+    history=recovery._safe(folder,relative)
+    if not history.is_file() or recovery._sha(history)!=whole['sha256']:
+        raise recovery.RecoveryReviewRequired('整稿恢复快照SHA不符')
+    report=recovery._read(history)
+    if (not isinstance(report,dict) or report.get('schema')!='autonomous_content_review_v1'
+            or report.get('job')!=Path(folder).name or report.get('snapshot_sha256')!=relative.stem
+            or not isinstance(report.get('snapshot'),dict)
+            or report['snapshot'].get('job')!=Path(folder).name
+            or report['snapshot'].get('input_source_sha256')!=request.get('source_sha256')
+            or recovery._hash(report['snapshot'])!=relative.stem):
+        raise recovery.RecoveryReviewRequired('整稿恢复快照身份不符')
+    evidence=Path('revisions/source_review_v1/evidence')/('translation_'+event['id'])
+    for sid,ref in refs.items():
+        expected=evidence/(sid+'_source_recheck.json')
+        if ref['path']!=str(expected):
+            raise recovery.RecoveryReviewRequired('整稿恢复源窗引用不属于原事件')
+        path=recovery._safe(folder,expected)
+        if not path.is_file() or recovery._sha(path)!=ref['sha256']:
+            raise recovery.RecoveryReviewRequired('整稿恢复源窗引用SHA不符')
+
+
 def source_alternative_errors(original,candidate,language='de'):
     """A recheck must not erase known quantities or logical qualifiers."""
     errors=[]
@@ -798,10 +894,10 @@ def _resume_partial_review_locked(root,folder,journal,event):
     request=records['request'];items=request.get('items') if isinstance(request,dict) else None
     if (not isinstance(items,list) or [item.get('id') for item in items if isinstance(item,dict)]!=event['segment_ids']
             or request.get('schema')!='translation_rejection_recovery_v1' or request.get('action')!='translation'
-            or recovery._hash({k:v for k,v in request.items()
-                if k!='items' and not (k=='source_recheck_records' and request.get('autonomous_content_review'))})!=event['input_fingerprint']
+            or request_fingerprint(request)!=event['input_fingerprint']
             or request.get('policy')!=policy):
         raise recovery.RecoveryReviewRequired('原审校请求或恢复范围绑定不符')
+    validate_request_auxiliary_refs(folder,event,request)
     document,rows=recovery._rows(folder);by_id={row['segment_id']:row for row in rows}
     if recovery._hash(rows)!=request.get('input_rows_sha256'):
         raise recovery.RecoveryReviewRequired('原审校输入行已改变')
@@ -983,8 +1079,9 @@ def _later_rejection_blocks_replay(folder,journal,index,rows,selected_ids=None):
 def _try_latest_whole_saved_review(root,folder,journal,rows,ids,explicit_ids=True):
     """Try one latest eligible approval before any new calls or reservation.
 
-    Inapplicable evidence and failing preflight are read-only skips. Never
-    search an older approval after this candidate is blocked or stale.
+    Inapplicable evidence is a read-only skip. In evidence-first mode a fully
+    bound approval still failing current guards stops before new reservation.
+    Never search an older approval after this candidate is blocked or stale.
     """
     latest=next(((index,event) for index,event in reversed(list(enumerate(journal['events'])))
         if event.get('action')=='translation' and event.get('status')=='failed'
@@ -1004,6 +1101,12 @@ def _try_latest_whole_saved_review(root,folder,journal,rows,ids,explicit_ids=Tru
         selected,_,rejected=_audit_subset(recovery._read(recovery._safe(evidence,'audit.json')),request['items'])
         if rejected or len(selected)!=len(event['segment_ids']):return None
         result=_resume_partial_review_locked(root,folder,journal,event)
+    except LocalGuardPending:
+        if event.get('partial_review') is not None:raise
+        state_path=recovery._safe(root,Path('web/state/jobs')/(folder.name+'.json'))
+        state=recovery._read(state_path) if state_path.is_file() else {}
+        if state.get('options',{}).get('autonomy_policy')=='evidence_first_v1':raise
+        return None
     except (OSError,ValueError,KeyError,TypeError,AttributeError,recovery.RecoveryReviewRequired):
         # Once a phase exists, this is a real transaction failure/interruption;
         # keep its existing recovery semantics instead of swallowing it.
@@ -1056,12 +1159,10 @@ def run(root, jid, policy=None, client_factory=None, recheck_factory=None, ids=N
                     'quality_notes_sha256':recovery._file_hash(folder,'translation/source_quality_notes.json'),
                     'independent_content_review_sha256':recovery._file_hash(folder,INDEPENDENT_REPORT),
                     'source_revision': recovery._file_hash(folder, 'source_plan_revision.json'),
-                    'code': {name: recovery._sha(root/'web'/name) if (root/'web'/name).is_file() else None
-                             for name in ('translation_recovery.py', 'source_audio_recheck.py', 'proxy_client.py',
-                                          'numeric_calendar_context.py','source_fraction_consensus.py')}}
+                    'code': request_code_identity(root)}
         auto_report=_autonomous_report_reference(folder)
         if auto_report:identity['autonomous_content_review']=auto_report
-        fingerprint = recovery._hash(identity)
+        fingerprint = request_fingerprint(identity)
         previous = [event for event in journal['events'] if event['action'] == 'translation'
                     and event['input_fingerprint'] == fingerprint]
         for event in reversed(previous):
