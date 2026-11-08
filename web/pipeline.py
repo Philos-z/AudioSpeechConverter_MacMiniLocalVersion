@@ -406,17 +406,32 @@ def reviewed_source_plan(folder,original_plan,source_sha256):
 
 
 def validate_translations(before,after,report,folder=None):
+    from editorial_policy import policy_for_folder
+    editorial_policy=policy_for_folder(folder) if folder is not None else 'strict_v1'
+    fluent=editorial_policy=='fluency_first_v1'
+    if fluent and report.get('editorial_policy')!=editorial_policy:
+        raise RuntimeError('译稿未绑定当前通顺优先策略')
+    if not fluent and report.get('editorial_policy') not in (None,'strict_v1'):
+        raise RuntimeError('旧任务不能使用其他编辑策略的批准')
     if len(before)!=len(after) or len({r['segment_id'] for r in after})!=len(before):raise RuntimeError('机器译稿编号或条数不完整')
     method=report.get('review_method');adoptions={};saved_targets={}
+    if fluent:
+        if not (method=='two_pass_machine_fluency_review' or
+                isinstance(method,str) and method.startswith('machine_fluency_two_pass_plus_')):
+            raise RuntimeError('通顺优先任务须保留相同标准的实际批准出处')
+        method=method.replace('machine_fluency_two_pass_plus_','machine_two_pass_plus_',1)
+    elif method=='two_pass_machine_fluency_review' or (isinstance(method,str) and method.startswith('machine_fluency_')):
+        raise RuntimeError('严格模式不能复用通顺模式批准')
     if report.get('human_reviewed') is not False or method not in (
-            'two_pass_machine_review_and_numeric_invariants','machine_two_pass_plus_user_context_adoption',
+            'two_pass_machine_review_and_numeric_invariants','two_pass_machine_fluency_review',
+            'machine_two_pass_plus_user_context_adoption',
             'machine_two_pass_plus_saved_independent_receipts',
             'machine_two_pass_plus_saved_independent_receipts_and_user_context_adoption',
             'machine_two_pass_plus_user_editorial_omission',
             'machine_two_pass_plus_saved_independent_receipts_and_user_editorial_omission',
             'machine_two_pass_plus_authorized_editorial_decisions',
             'machine_two_pass_plus_saved_independent_receipts_and_authorized_editorial_decisions'):
-        raise RuntimeError('译稿没有实际机器二审及数字检查记录')
+        raise RuntimeError('译稿没有对应策略的实际机器二审记录')
     if folder is not None:
         from user_context_adoption import load_adoptions
         supplied=load_adoptions(Path(folder).parent.parent,Path(folder),before)
@@ -478,6 +493,8 @@ def validate_translations(before,after,report,folder=None):
             raise RuntimeError('译稿审校语言与实际原文不一致')
     for row in after:
         original=source.get(row['segment_id'])
+        if fluent and (original is None or row.get('source_ids')!=original.get('source_ids')):
+            raise RuntimeError('通顺编辑改变了源ID绑定')
         if not original or any(row.get(k)!=original.get(k) for k in ('speaker_id','start_s','end_s','text_de')):
             raise RuntimeError('机器译稿改变了源台词或时间/说话人归属')
         if (('text_source' in original and row.get('text_source')!=original['text_source'])
@@ -524,7 +541,7 @@ def validate_translations(before,after,report,folder=None):
                     or any(row.get(flag) is not False for flag in ('human_listened','source_words_verified'))
                     or row.get('join_previous') is not False):
                 raise RuntimeError('既有双审复用的实际全文、来源或模型不符')
-        elif row.get('translation_review_method')!='proxy_second_pass_and_numeric_checks':
+        elif row.get('translation_review_method')!=('proxy_second_pass_fluency_review' if fluent else 'proxy_second_pass_and_numeric_checks'):
             raise RuntimeError('未采纳句仍须实际Proxy第二遍审校')
     if folder is not None:
         from translation_constraints import validate_approved_targets
@@ -1018,6 +1035,8 @@ class Flow:
         if not result['sufficient']:raise RuntimeError(result['message'])
         return result
     def stages(self):
+        from editorial_policy import policy_for_folder
+        fluent=policy_for_folder(self.folder)=='fluency_first_v1'
         self.check()
         mastering=mastering_policy(self.options)
         pilot_limit=self.options.get('voice_pilot_groups',0)
@@ -1102,7 +1121,7 @@ class Flow:
             if source_revision['unresolved']:
                 self.warnings.append('部分原文仍有待核对：'+','.join(source_revision['unresolved']))
         translation_input=self.folder/'translation/input.json'
-        if (source_revision and source_revision['blocking_unresolved']
+        if (not fluent and source_revision and source_revision['blocking_unresolved']
                 and self.website_policy['enabled'] and self.website_policy['source_mode']=='contextual'):
             save(translation_input,{'segments':planned,**source_language_metadata(actual_language)})
             while source_revision['blocking_unresolved']:
@@ -1132,6 +1151,8 @@ class Flow:
             'source_language':actual_language,'proxy_client_code':digest(Path(__file__).with_name('proxy_client.py')),
             'committed_review_targets_code':digest(Path(__file__).with_name('committed_review_targets.py')),
             'method':'actual_two_pass_numeric_checks'}
+        if fluent:
+            tsig.update(editorial_policy='fluency_first_v1',editorial_policy_code=digest(script(self.root,'editorial_policy.py')))
         if not self.cached('translation',tsig,[]):
             def tr_line(text):
                 try:event=json.loads(text)
@@ -1143,7 +1164,7 @@ class Flow:
         validate_translations(planned,read(translated)['segments'],read(translation_report),folder=self.folder)
         from translation_recovery import source_pending
         source_rechecks=source_pending(self.folder,planned)
-        if source_rechecks:
+        if source_rechecks and not fluent:
             if self.website_policy['enabled'] and self.website_policy['source_mode']=='contextual':
                 if self.text_repair('translation',ids=source_rechecks[:8]):
                     raise WebsiteRepairReady('source_recheck_before_tts',{'affected_count':min(8,len(source_rechecks))})
@@ -1151,9 +1172,12 @@ class Flow:
         self.review_whole_script(planned)
         if previous_group_plan and self.website_policy['enabled']:
             self.media_recovery().rebind_no_join(self.root,self.folder,previous_group_plan)
-        if source_revision and source_revision['blocking_unresolved']:
+        if source_revision and source_revision['blocking_unresolved'] and not fluent:
             raise RuntimeError('机器译稿已保存；原文词义仍待核对：'+','.join(source_revision['blocking_unresolved'])+
                 '。未启动配音或最终导出，不能标记为最终完成。')
+        if fluent and source_revision and source_revision['blocking_unresolved']:
+            self.metrics['accepted_source_uncertainty_risk']={'editorial_policy':'fluency_first_v1',
+                'ids':source_revision['blocking_unresolved'],'source_words_verified':False,'human_listened':False}
         rows=read(translated)['segments']
         validate_translations(planned,rows,read(translation_report),folder=self.folder)
         subtitle_preflight=self.folder/'subtitle_preflight.json'
@@ -1349,12 +1373,19 @@ class Flow:
                     'checker':digest(script(self.root,'media_recovery.py'))}
                 if quality_policy=='layered_full_content_v1':
                     quality_identity['content_checker']=digest(script(self.root,'speech_content_quality.py'))
+                if fluent:
+                    quality_identity.update(editorial_policy='fluency_first_v1',
+                        risk_reader=digest(script(self.root,'fluency_voice_resolution.py')))
                 quality=self.folder/'tts'/('audio_quality_'+key(quality_identity)[:16]+'.json')
                 # An exact existing-WAV user choice revalidates the complete
                 # saved PCM/ASR evidence without rewriting that historical report.
-                import user_voice_risk_20261106 as user_risk
-                saved_risk=user_risk.accept_quality(self.root,self.folder,group_plan,repair_base,
+                import fluency_voice_resolution as fluent_risk
+                saved_risk=fluent_risk.accept_quality(self.root,self.folder,group_plan,repair_base,
                     quality,read(quality)) if quality.is_file() else None
+                import user_voice_risk_20261106 as user_risk
+                if saved_risk is None:
+                    saved_risk=user_risk.accept_quality(self.root,self.folder,group_plan,repair_base,
+                        quality,read(quality)) if quality.is_file() else None
                 if saved_risk is None:
                     self.command('检查配音声学异常',81,81,[self.asr_py,'-B',script(self.root,'media_recovery.py'),
                         'audio-quality','--root',self.root,'--plan',group_plan,'--manifest',repair_base,
@@ -1380,7 +1411,8 @@ class Flow:
                         repair_base,quality,Path(request['fallback_manifest']))
                     raise WebsiteRepairReady('regenerate_failed_speech',repaired)
                 adoption=self.handle_unconfirmed_audio_quality(checked,group_plan,repair_base,quality,manifest)
-                if adoption is not None:export_identity['user_audio_uncertainty_resolution']=adoption
+                if adoption is not None:
+                    export_identity['autonomous_audio_uncertainty_resolution' if fluent else 'user_audio_uncertainty_resolution']=adoption
                 export_identity['speech_quality_policy']=quality_policy
                 export_identity['speech_quality_checker']=quality_identity
                 if self.options.get('autonomous_content_review') is True:
@@ -1563,6 +1595,18 @@ class Flow:
                 'source_sha256':clip_sha,'options':child_options,
                 '_episode_asr':{'path':str(child_asr),'sha256':digest(child_asr),
                     'clip_sha256':clip_sha,'parent_id':self.name}}
+            if self.options.get('editorial_policy')=='fluency_first_v1':
+                child_folder=self.root/'jobs'/child_job['id'];child_folder.mkdir(parents=True,exist_ok=True)
+                binding={'schema':'episode_editorial_policy_binding_v1','job_id':child_job['id'],
+                    'parent_id':self.name,'editorial_policy':'fluency_first_v1',
+                    'parent_source_sha256':source_sha,'episode_index':number,
+                    'episode_plan':{'path':str(plan_path.relative_to(self.root)),'sha256':digest(plan_path)},
+                    'clip':{'path':str(clip.relative_to(self.root)),'sha256':clip_sha},
+                    'episode_asr':{'path':str(child_asr.relative_to(self.root)),'sha256':digest(child_asr)}}
+                bound_path=child_folder/'editorial_policy_binding.json'
+                if bound_path.exists() and read(bound_path)!=binding:
+                    raise RuntimeError('分集编辑策略绑定已改变，未改写既有凭据')
+                if not bound_path.exists():save(bound_path,binding)
             def update(stage,progress,details=None):
                 safe=dict(details or {});safe.pop('voice_pilot',None)
                 self.emit(prefix+stage,lo+(hi-lo)*progress/100,
@@ -1620,6 +1664,11 @@ class Flow:
         if not unresolved:return
         if checked.get('needs_repair_ids'):
             raise RuntimeError('声学硬检查尚未处理，不能改走未确认声音分支')
+        import fluency_voice_resolution as fluent_risk
+        adoption=fluent_risk.accept_quality(self.root,self.folder,group_plan,repair_base,quality,checked)
+        if adoption is not None:
+            self.metrics['autonomous_audio_uncertainty_resolution']=adoption
+            return adoption
         import user_voice_risk_20261106 as user_risk
         adoption=user_risk.accept_quality(self.root,self.folder,group_plan,repair_base,quality,checked)
         if adoption is not None:
@@ -2051,6 +2100,8 @@ def check_speakers(root,folder):
 
 def translate_job(root,folder):
     from proxy_client import translate_segments,ProxyTransportError,emit_transport_failure
+    from editorial_policy import policy_for_folder
+    editorial_policy=policy_for_folder(folder)
     data=read(folder/'translation/input.json');rows=data['segments']
     language=normalize_language(data.get('source_language','de'),allow_auto=False)
     review_scope=None;language_exceptions={}
@@ -2063,7 +2114,8 @@ def translate_job(root,folder):
     def progress(done,total):print(json.dumps({'event':'translation_progress','completed':done,'total':total}),flush=True)
     try:
         updated,report=translate_segments(rows,root,progress=progress,diagnostic_dir=folder/'translation/diagnostics',
-            source_language=language,review_scope=review_scope,language_exceptions=language_exceptions)
+            source_language=language,review_scope=review_scope,language_exceptions=language_exceptions,
+            editorial_policy=editorial_policy)
     except ProxyTransportError as error:
         emit_transport_failure(error.failure_metadata,event='proxy_stage_failure')
         raise
@@ -2076,7 +2128,10 @@ def translate_job(root,folder):
         report.update(source_revision_receipt_sha256=digest(revision_path),
             blocking_unresolved_source_rows=sorted(pending),
             source_transcript_uncertainties=revision.get('unresolved',[]))
-        if pending:
+        if pending and editorial_policy=='fluency_first_v1':
+            report['accepted_source_uncertainty_ids']=sorted(pending)
+            report['source_words_verified']=False
+        if pending and editorial_policy!='fluency_first_v1':
             report['review_status']='machine_second_pass_complete_source_review_pending'
             updated=[{**row,'source_review_required':True} if row['segment_id'] in pending else row for row in updated]
     save(folder/'segments.json',{'schema_version':2,'segments':updated,**source_language_metadata(language),'human_reviewed':False,

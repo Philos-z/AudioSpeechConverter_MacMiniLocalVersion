@@ -44,6 +44,9 @@ def apply_prior_reviews(root, folder, rows, updated, report):
     config_path = _safe(expected_folder, CONFIG)
     if not config_path.exists():
         return updated, report
+    from editorial_policy import policy_for_folder,FLUENCY
+    if policy_for_folder(expected_folder)==FLUENCY:
+        raise ValueError('严格模式旧审校配置不能跨策略复用到流畅优先任务')
     config = _read(config_path)
     if (not isinstance(config, dict) or set(config) != {'schema', 'input_source_sha256', 'rows'}
             or config.get('schema') != SCHEMA or not isinstance(config.get('rows'), dict)

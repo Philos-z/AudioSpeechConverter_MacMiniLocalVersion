@@ -1,0 +1,11 @@
+{
+  "schema": "editorial_policy_defaults_v1",
+  "default_policy": "strict_v1",
+  "decision_maker": "proxy",
+  "ask_for_editorial_choices": false,
+  "meaning_deviation_allowed": true,
+  "authorization_ref": {
+    "path": "",
+    "sha256": ""
+  }
+}

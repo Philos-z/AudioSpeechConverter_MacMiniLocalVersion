@@ -7,7 +7,8 @@ are inputs, never writable outputs of this module. HTTP is GET-only and local.
 from __future__ import annotations
 
 import copy
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 import hashlib
 import ipaddress
 import json
@@ -429,8 +430,14 @@ def observe(root, state, binding, *, get=None, now=None):
             row['reason'] = 'job_missing_changed_or_api_local_mismatch'
         row['decisions'] = _decisions(root, job_id, watch, files)
         jobs[job_id] = row
+    daily_authority={}
+    if config.get('daily_submission_policy')=='current_date_independent_v1':
+        require(config.get('timezone')=='Europe/Berlin' and config.get('daily_local_time')=='21:00',
+            'invalid_current_date_daily_schedule')
+        daily_authority={'daily_start_policy':{'policy':'current_date_independent_v1',
+            'timezone':'Europe/Berlin','daily_local_time':'21:00'}}
     return {'schema': OBSERVATION_SCHEMA, 'observed_at': at.astimezone(timezone.utc).isoformat(),
-        'binding': copy.deepcopy(binding), 'liveness': liveness, 'jobs': jobs,
+        'binding': copy.deepcopy(binding), 'liveness': liveness, 'jobs': jobs, **daily_authority,
         'files': dict(sorted(files.items())), 'external_mutations_performed': False}
 
 
@@ -496,20 +503,34 @@ def derive(state, observation):
             'notification_needed': kind in {'inspect_observation_conflict', 'inspect_decision_evidence',
                 'verify_completion_evidence', 'connector_send_candidate', 'connector_verify_sent_items',
                 'inspect_failure_no_automatic_retry'} and not pending})
+    latest_due_intent=None
+    if observation.get('daily_start_policy')=={'policy':'current_date_independent_v1',
+            'timezone':'Europe/Berlin','daily_local_time':'21:00'}:
+        local=timestamp(observation['observed_at']).astimezone(ZoneInfo('Europe/Berlin'))
+        due=local.date() if (local.hour,local.minute)>=(21,0) else local.date()-timedelta(days=1)
+        # Only the exact latest due programme day may be resumed automatically.
+        # Missing days do not make an older frozen backlog newly actionable.
+        latest_due_intent=due.isoformat() if due.isoformat() in state.get('daily_intents',{}) else None
     intents = {}
-    for date, intent in sorted(state.get('daily_intents', {}).items()):
+    for intent_date, intent in sorted(state.get('daily_intents', {}).items()):
         status = intent.get('status')
         kind = 'preserve_intent'
         if status in {'submitting', 'submission_unknown'}:
             kind = 'reconcile_submission_without_repost'
+        elif (intent_date==latest_due_intent and not intent.get('job_id')
+                and status in {'waiting_previous','waiting_source','waiting_storage','waiting_capacity','waiting_api','claimed','ready','waiting_queue','preparing','waiting_api_or_source'}
+                and intent.get('automatic_resumption_allowed') is not False
+                and (intent.get('user_hold') or {}).get('automatic_resumption_allowed') is not False
+                and (intent.get('user_hold') or {}).get('status') not in {'deferred_by_user','paused','user_hold'}):
+            kind = 'daily_start_candidate' if operational else 'preserve_frozen_wait'
         elif status == 'waiting_previous':
             kind = 'preserve_waiting_previous'
         elif status in {'waiting_source', 'waiting_storage'}:
             kind = 'preserve_frozen_wait'
-        intents[date] = {'status': status, 'episode_key': intent.get('episode_key'),
+        intents[intent_date] = {'status': status, 'episode_key': intent.get('episode_key'),
             'job_id': intent.get('job_id'), 'next_action': kind}
         if kind != 'preserve_intent':
-            actions.append({'kind': kind, 'intent_date': date, 'execution_allowed': False,
+            actions.append({'kind': kind, 'intent_date': intent_date, 'execution_allowed': False,
                 'notification_needed': kind == 'reconcile_submission_without_repost'})
     notifications = {}
     for key, item in sorted(state.get('notifications', {}).items()):
@@ -551,6 +572,7 @@ def summary(projection):
         'preserve_user_hold': '保留用户暂缓', 'preserve_canceled_job': '保留用户取消',
         'completed_notified': '已完成并通知，保留全部收据',
         'preserve_waiting_previous': '保留前期等待与冻结节目',
+        'daily_start_candidate': '由正式每日启动入口续办最新到期节目，旧期暂缓不阻挡此期',
         'reconcile_submission_without_repost': '核对提交不明状态，不重复POST',
         'preserve_frozen_wait': '保留已冻结意图，等待原流程检查', 'preserve_intent': '保留当前意图'}
     return '；'.join((item.get('job_id') or item.get('intent_date', '')) + '：' + labels[item['kind']]

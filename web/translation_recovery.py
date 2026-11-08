@@ -11,6 +11,48 @@ from datetime import datetime
 import website_recovery as recovery
 
 
+def _editorial_policy(folder):
+    from editorial_policy import policy_for_folder
+    return policy_for_folder(folder)
+
+
+def _is_fluent(folder):
+    from editorial_policy import FLUENCY
+    return _editorial_policy(folder)==FLUENCY
+
+
+def nonblocking_source_risks(folder,rows):
+    if not _is_fluent(folder):return {}
+    return {sid:item for sid,item in pending(folder,rows,include_history=True).items()
+            if item.get('independent_content_rejection') or item.get('review_issues')}
+
+
+def _original_reference_candidates(root,folder,rows,evidence_dir,source_sha):
+    from editorial_policy import fields,FLUENCY
+    values={}
+    for row in rows:
+        sid=row['segment_id'];value={'schema':'fluency_original_source_reference_v1',
+            'alternatives':{'original':row['text_de']},'original_text_sha256':hashlib.sha256(row['text_de'].encode()).hexdigest(),
+            'input_source_sha256':source_sha,'evidence':[],'asr_performed':False,
+            'decoding':{'method':'existing_source_reference_only','human_verified':False,'hinted_candidate_used':False,'hotwords':[]},
+            'human_reviewed':False,'source_words_verified':False,**fields(FLUENCY)}
+        recovery._save(evidence_dir/(sid+'_source_recheck.json'),value);values[sid]=value
+    return values
+
+
+def _input_attempts(folder,journal,identity,ids):
+    # Only data define this budget. Changing mode or code never buys another try.
+    matched=[]
+    for event in journal['events']:
+        if event.get('action')!='translation' or event.get('segment_ids')!=list(ids):continue
+        path=recovery._safe(folder,'revisions/source_review_v1/evidence/translation_'+event['id']+'/request.json')
+        if not path.exists():matched.append(event);continue
+        prior=recovery._read(path)
+        if (prior.get('input_rows_sha256')==identity['input_rows_sha256']
+                and prior.get('source_sha256')==identity['source_sha256']):matched.append(event)
+    return len(matched)
+
+
 class LocalGuardPending(recovery.RecoveryReviewRequired):
     """The audit approved these words, but local factual checks still block them."""
     def __init__(self, checks):
@@ -83,6 +125,8 @@ def validate_request_auxiliary_refs(folder, event, request):
     Saved replay separately verifies every candidate and complete audio window.
     These refs cannot redirect that reader or silently contradict its files.
     """
+    from editorial_policy import check_record
+    check_record(request,_editorial_policy(folder))
     if not request.get('autonomous_content_review') and 'source_recheck_records' not in request:
         return
     request_fingerprint(request)
@@ -520,11 +564,14 @@ def _ordinary_omission_closed(folder,rows,sid,issues):
         if (len(matches)!=1 or source_binding(matches[0])!=binding
                 or matches[0].get('text_zh')!=text):return False
     return not invariants(row['text_de'],text,
-        previous_context=recovery._guard_context(rows,index),source_language=row.get('source_language','de'))
+        previous_context=recovery._guard_context(rows,index),source_language=row.get('source_language','de'),
+        editorial_policy=_editorial_policy(folder))
 
 
 def source_pending(folder,rows):
-    """Earlier ASR/meaning rejections require a source recheck before TTS."""
+    """Strict jobs require ASR certainty; fluent jobs retain it as evidence only."""
+    from editorial_policy import policy_for_folder,FLUENCY
+    if policy_for_folder(folder)==FLUENCY:return []
     folder=Path(folder)
     from tagesschau_six_commit_20261105 import active,pending_after_commit
     if active(folder.parent.parent,folder):return pending_after_commit(folder.parent.parent,folder,rows)
@@ -645,6 +692,9 @@ def _commit_review(root, folder, journal, event, rows, revision, items, final, c
                    evidence_dir, source_sha, video, protected, before, proof_filename="source_selection.json",
                    validate_only=False):
     """Commit only explicitly approved rows through the existing durable transaction."""
+    if _is_fluent(folder):
+        from editorial_policy import assert_unheld
+        assert_unheld(folder)
     event_id=event["id"];ids=[item["id"] for item in items]
     independent_review_sha=recovery._read(evidence_dir/'request.json').get('independent_content_review_sha256')
     original_path=recovery._safe(folder,"segments.plan.json")
@@ -681,7 +731,8 @@ def _commit_review(root, folder, journal, event, rows, revision, items, final, c
     from proxy_client import invariants
     checks = {item['id']: invariants(by_id[item['id']]['text_de'], final[item['id']]['text_zh'],
         previous_context=recovery._guard_context(revised_rows, indexes[item['id']]),
-        source_language=by_id[item['id']].get('source_language',item['source_language'])) for item in items}
+        source_language=by_id[item['id']].get('source_language',item['source_language']),
+        editorial_policy=_editorial_policy(folder)) for item in items}
     for item in items:
         sid=item['id'];prior=item['existing_text_constraints']
         if prior.get('machine_translation_recovery') is not True:
@@ -739,7 +790,7 @@ def _commit_review(root, folder, journal, event, rows, revision, items, final, c
             hints['rows'][sid]=kept
             continue
         hints['rows'][sid] = {'source_text_sha256': hashlib.sha256(text.encode()).hexdigest(),
-            'note': '本机局部原声复核与独立Proxy二审的机器修订，原词未人工逐字确认。保留比较、数字及不确定性；建议完整中文：'+wording,
+            'note': ('按用户冻结流畅优先策略经真实Proxy编辑及二审，允许意译简化及意义偏差；未核听、未声明事实完整。建议完整中文：' if _is_fluent(folder) else '本机局部原声复核与独立Proxy二审的机器修订，原词未人工逐字确认。保留比较、数字及不确定性；建议完整中文：')+wording,
             'required_strings': [wording[n:n+80] for n in range(0, len(wording), 80)],
             'machine_translation_recovery':True}
         if independent_review_sha:hints['rows'][sid]['independent_content_review_sha256']=independent_review_sha
@@ -867,6 +918,9 @@ def _recover_partial_transactions(folder,journal):
 
 
 def _resume_partial_review_locked(root,folder,journal,event):
+    if _is_fluent(folder):
+        from editorial_policy import assert_unheld
+        assert_unheld(folder)
     if event.get('action')!='translation' or event.get('status')!='failed' or event.get('proxy_calls')!=2:
         raise recovery.RecoveryReviewRequired('仅可复用已失败且完成两次调用的翻译审校')
     phase=event.get('partial_review')
@@ -891,7 +945,10 @@ def _resume_partial_review_locked(root,folder,journal,event):
     hashes={name+'_sha256':recovery._sha(path) for name,path in paths.items()}
     saved=event.get('saved_review')
     if saved is not None and saved!=hashes:raise recovery.RecoveryReviewRequired('原审校响应哈希不符')
-    request=records['request'];items=request.get('items') if isinstance(request,dict) else None
+    request=records['request']
+    from editorial_policy import check_record
+    check_record(request,_editorial_policy(folder))
+    items=request.get('items') if isinstance(request,dict) else None
     if (not isinstance(items,list) or [item.get('id') for item in items if isinstance(item,dict)]!=event['segment_ids']
             or request.get('schema')!='translation_rejection_recovery_v1' or request.get('action')!='translation'
             or request_fingerprint(request)!=event['input_fingerprint']
@@ -949,7 +1006,11 @@ def _resume_partial_review_locked(root,folder,journal,event):
                 raise recovery.RecoveryReviewRequired('原审校候选已改变')
         exact=[proof for proof in candidate.get('evidence',[]) if proof.get('kind')=='exact']
         from source_audio_recheck import exact_window_matches
-        if (len(exact)!=1 or not exact_window_matches(exact[0],row,rows,source['duration_s'])
+        reference_only=_is_fluent(folder) and candidate.get('schema')=='fluency_original_source_reference_v1'
+        if reference_only and (alternatives!={'original':row['text_de']} or candidate.get('asr_performed') is not False
+                or candidate.get('evidence')!=[] or set(item['source_alternatives'])!={'original'}):
+            raise recovery.RecoveryReviewRequired('流畅优先源参考发生未授权原文替换')
+        if not reference_only and (len(exact)!=1 or not exact_window_matches(exact[0],row,rows,source['duration_s'])
                 or exact[0].get('full_text')!=alternatives.get('exact')):
             raise recovery.RecoveryReviewRequired('原声复核不是当前精确源窗')
         for proof in candidate.get('evidence',[]):
@@ -1117,6 +1178,11 @@ def _try_latest_whole_saved_review(root,folder,journal,rows,ids,explicit_ids=Tru
 
 def run(root, jid, policy=None, client_factory=None, recheck_factory=None, ids=None):
     root, folder = recovery._folder(root, jid)
+    from editorial_policy import FLUENCY,fields,FLUENCY_GUIDANCE
+    editorial_policy=_editorial_policy(folder);fluent=editorial_policy==FLUENCY
+    if fluent:
+        from editorial_policy import assert_unheld
+        assert_unheld(folder)
     policy = recovery._policy(root, jid, policy)
     if not policy['enabled'] or policy['source_mode'] != 'contextual':
         raise recovery.RecoveryReviewRequired('当前策略要求先核对原文')
@@ -1161,14 +1227,16 @@ def run(root, jid, policy=None, client_factory=None, recheck_factory=None, ids=N
                     'source_revision': recovery._file_hash(folder, 'source_plan_revision.json'),
                     'code': request_code_identity(root)}
         auto_report=_autonomous_report_reference(folder)
+        identity.update(fields(editorial_policy))
         if auto_report:identity['autonomous_content_review']=auto_report
         fingerprint = request_fingerprint(identity)
         previous = [event for event in journal['events'] if event['action'] == 'translation'
                     and event['input_fingerprint'] == fingerprint]
+        spent_input_attempts=_input_attempts(folder,journal,identity,ids) if fluent else len(previous)
         for event in reversed(previous):
             if event['status'] == 'succeeded' and recovery._success_current(folder, event):
                 return {'status': 'reused', 'action': 'translation', 'affected_count': len(ids)}
-        if len(journal['events']) >= recovery.MAX_ACTIONS or len(previous) >= recovery.MAX_PER_INPUT:
+        if len(journal['events']) >= recovery.MAX_ACTIONS or spent_input_attempts >= recovery.MAX_PER_INPUT:
             raise recovery.RecoveryBudgetExhausted('本任务或同输入恢复次数已用完，成果和证据保留')
         event_id = recovery._hash({'fingerprint': fingerprint, 'attempt': len(journal['events'])+1})
         event = {'id': event_id, 'at': recovery._now(), 'action': 'translation',
@@ -1197,6 +1265,8 @@ def run(root, jid, policy=None, client_factory=None, recheck_factory=None, ids=N
             auto_ref=identity['autonomous_content_review']
             protected[auto_ref['path']]=auto_ref['sha256']
         try:
+            if fluent:
+                recheck_factory=_original_reference_candidates
             if recheck_factory is None:
                 from source_audio_recheck import recheck
                 state=recovery._read(state_path) if state_path.is_file() else {}
@@ -1286,14 +1356,17 @@ def run(root, jid, policy=None, client_factory=None, recheck_factory=None, ids=N
                     '候选核心动作和逻辑已经清楚时，紧邻原句中明确给出的同一实体可辅助解析代词和孤立词尾噪声；不得借此新增本句没有的动作、数值、人物或改变否定条件。'
                     'source_candidate_decoding会明确记录有词汇提示的机器重识别，它不是无提示识别或人工确认；须结合未提示候选与上下文独立判断。'
                     '中文自然口语，数量尽量用阿拉伯数字，时刻HH:MM。')+SEMANTIC_TOLERANCE
+            if fluent:base=FLUENCY_GUIDANCE+'你是中文译配编辑，只使用原源reference，不改造source_alternatives。中文由你自主自然取舍。'
             event.update(status='editing', proxy_calls=1);recovery._publish(folder, journal)
             draft_raw = client.json(base+'只返回 {"translations":[{"id":"原id","text_zh":"中文","source_choice":"original或exact，且该行必须存在这个键"}]}。', payload)
             recovery._save(evidence_dir/'editor.json', draft_raw)
             protected[str((evidence_dir/'editor.json').relative_to(folder))]=recovery._sha(evidence_dir/'editor.json')
+            if fluent:assert_unheld(folder)
             draft = _response(draft_raw, items)
             event.update(status='reviewing', proxy_calls=2);recovery._publish(folder, journal)
-            audit_raw = client.json(base+'你是独立第二遍审校员，重新对照各原声识别候选，纠正编辑选择与中文。'
-                '只有全文忠实、无未解决问题时approved=true且issues=[]。'
+            audit_goal=('你是独立第二遍流畅性审校员，校正中文，通顺连贯且无未解决流畅性问题才approved=true且issues=[]。' if fluent else
+                '你是独立第二遍审校员，重新对照各原声识别候选，纠正编辑选择与中文。只有全文忠实、无未解决问题时approved=true且issues=[]。')
+            audit_raw = client.json(base+audit_goal+
                 '只返回 {"translations":[{"id":"原id","text_zh":"中文","source_choice":"original或exact，且该行必须存在这个键","approved":true,"issues":[]}]}。',
                 {**payload, 'draft': draft})
             recovery._save(evidence_dir/'audit.json', audit_raw)
@@ -1301,6 +1374,7 @@ def run(root, jid, policy=None, client_factory=None, recheck_factory=None, ids=N
             event['saved_review']={name+'_sha256':recovery._sha(evidence_dir/(name+'.json'))
                                    for name in ('request','editor','audit')}
             recovery._publish(folder,journal)
+            if fluent:assert_unheld(folder)
             try:
                 final = _response(audit_raw, items, audit=True)
             except recovery.RecoveryReviewRequired:

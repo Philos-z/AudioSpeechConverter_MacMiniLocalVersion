@@ -9,7 +9,7 @@ import proxy_client as proxy
 class PreviewHintTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
-        self.root=Path(self.temp.name);self.diagnostics=self.root/'job/translation/diagnostics'
+        self.root=Path(self.temp.name);self.diagnostics=self.root/'jobs/job/translation/diagnostics'
         self.diagnostics.mkdir(parents=True);self.path=self.diagnostics.parent/'source_review_hints.json'
         self.rows=[{'segment_id':'line0001','speaker_id':'S00','start_s':0.,'end_s':2.,'text_de':'Hallo.'},
             {'segment_id':'line0002','speaker_id':'S00','start_s':2.,'end_s':4.,'text_de':'Tschüss.'}]

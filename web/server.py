@@ -27,6 +27,7 @@ import wave
 import urllib.request
 
 from pipeline import DEFAULT_TTS_PROFILE, DEFAULT_TTS_GROUPING, DEFAULT_MASTERING_POLICY
+from editorial_policy import default_policy
 from source_language import normalize_language, source_language_metadata
 from failure_triage import (SOURCE_GATE, TRANSLATION_STAGE, checkpoint_marker,
     make_failure_record, persist_failure, public_failure, retry_message)
@@ -198,6 +199,7 @@ class JobManager:
             job_id = job_id or self.new_id()
             if not ID.fullmatch(job_id) or job_id in self.jobs:
                 raise ValueError('任务编号重复，请重新提交。')
+            editorial_policy = default_policy(self.root)
             job = {'id': job_id, 'title': str(title).strip()[:120] or '视频译配',
                    'status': 'queued', 'stage': 'queued', 'progress': 0,
                    'queue_reason': 'submitted',
@@ -209,6 +211,7 @@ class JobManager:
                                'voice_pilot_groups': 2,
                                'restart_policy': task_takeover.POLICY,
                                'autonomy_policy': 'evidence_first_v1',
+                               'editorial_policy': editorial_policy,
                                'autonomous_content_review': True,
                                'speech_quality_policy': 'layered_full_content_v1',
                                'source_language': source_language, 'target_language': 'zh',
@@ -216,7 +219,9 @@ class JobManager:
                                'subtitles': 'zh_above_source', 'human_reviewed': False,
                                'website_recovery': policy},
                    **source_language_metadata(source_language),
-                   'review_status': '机器审稿预览，仍需核对专名与听感'}
+                   'review_status': ('机器审稿，编辑与读音风险由自动流程决定'
+                       if editorial_policy == 'fluency_first_v1'
+                       else '机器审稿预览，仍需核对专名与听感')}
             if input_path:
                 path = Path(input_path).resolve()
                 if not path.is_relative_to(self.root / 'inputs/web') or not path.is_file():

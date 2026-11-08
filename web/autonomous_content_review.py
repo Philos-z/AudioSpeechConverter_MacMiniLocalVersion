@@ -60,6 +60,15 @@ SYSTEM = (
 )
 
 
+def _system(policy=None):
+    from editorial_policy import normalize,FLUENCY,FLUENCY_GUIDANCE
+    if normalize(policy)!=FLUENCY:return SYSTEM
+    return (FLUENCY_GUIDANCE+'你是独立整稿中文流畅性终审员，结合whole_script检查中文整体自然连贯。不能改写译文、改源或跳过实际审校。'
+        '保持原schema，只有确切中文乱码、不通顺或中文跨句自相矛盾才拒绝；使用translation_mismatch或cross_sentence_contradiction等既有type标记。'
+        '每个问题仍须引用当前源行的真实连续source_quote（仅用于定位，不表示要求忠实原文）、当前中文连续translation_quote，related_ids只引用真实id。'
+        +SYSTEM[SYSTEM.index('只返回JSON'):])
+
+
 class ContentReviewError(RuntimeError):
     pass
 
@@ -154,6 +163,8 @@ def _snapshot(root, folder, rows, identity):
     from user_context_adoption import load_adoptions
     root = Path(root).resolve()
     folder = Path(folder).resolve()
+    from editorial_policy import policy_for_folder,FLUENCY,fields
+    editorial_policy=policy_for_folder(folder)
     _require(folder == recovery._safe(root, Path('jobs') / folder.name), '终审任务不属于此项目')
     _require(isinstance(rows, list) and rows, '整稿终审不能接受空台词')
     ids = [row.get('segment_id') if isinstance(row, dict) else None for row in rows]
@@ -270,11 +281,16 @@ def _snapshot(root, folder, rows, identity):
     if folder.name==nov5_jid:
         names=names+(six_ledger,'translation/frozen_saved_reviews_20261105.json')+tuple(six_base+'/'+n for n in ('request.json','editor.json','audit.json','calls.json','receipt.json','transaction.json'))
     bindings = {name: recovery._file_hash(folder, name) for name in names}
-    return {'schema': VERSION, 'job': folder.name, 'input_source_sha256': source_sha,
+    snapshot={'schema': VERSION, 'job': folder.name, 'input_source_sha256': source_sha,
             'whole_script': script, 'bindings': bindings, 'model_configuration': identity,
             'code_sha256': _code_identity(), 'prompt_sha256': hashlib.sha256(SYSTEM.encode()).hexdigest(),
             'batch_size': BATCH_SIZE, 'max_calls': MAX_CALLS,
             'max_per_request': _journal(folder)['max_per_request']}
+    if editorial_policy==FLUENCY:
+        snapshot.update(fields(editorial_policy))
+        snapshot['code_sha256']['editorial_policy.py']=recovery._sha(Path(__file__).with_name('editorial_policy.py'))
+        snapshot['prompt_sha256']=hashlib.sha256(_system(editorial_policy).encode()).hexdigest()
+    return snapshot
 
 
 def _requests(snapshot):
@@ -392,8 +408,18 @@ def _attempt_identity(request):
     return _fp(value)
 
 
+def _fluency_budget_identity(request):
+    identity=request['identity']
+    return _fp({'job':identity.get('job'),'input_source_sha256':identity.get('input_source_sha256'),
+        'items':[row['id'] for row in request['items']],
+        'whole_script':[{key:row.get(key) for key in ('id','source_binding','text_source','source_language','text_zh')}
+                        for row in request['whole_script']]})
+
+
 def _budget_attempts(folder, journal, request, current_requests=()):
-    identity = _attempt_identity(request)
+    from editorial_policy import normalize,FLUENCY
+    fluent=normalize(request['identity'].get('editorial_policy'))==FLUENCY
+    identity = _fluency_budget_identity(request) if fluent else _attempt_identity(request)
     current = {_fp(item): item for item in (*current_requests, request)}
     matching = []
     for event in journal['events']:
@@ -416,7 +442,11 @@ def _budget_attempts(folder, journal, request, current_requests=()):
                      '整稿终审旧调用预算与真实完整请求不符')
             actual_key = _attempt_identity(prior)
             _require(saved_key is None or saved_key == actual_key, '整稿终审调用预算身份与诊断不符')
+            if fluent:actual_key=_fluency_budget_identity(prior)
+        elif fluent and event['request_sha256'] in current:
+            actual_key=_fluency_budget_identity(current[event['request_sha256']])
         elif saved_key is not None:
+            if fluent:raise ContentReviewError('中断的旧模式调用缺少完整输入证明，不重新开放预算')
             actual_key = saved_key
         elif event['request_sha256'] in current:
             actual_key = _attempt_identity(current[event['request_sha256']])
@@ -489,6 +519,13 @@ def _historical_rejections(snapshot, events, folder):
     A later validated user choice can settle only disclosed source uncertainty;
     it cannot settle a new translation error or a new contextual contradiction.
     """
+    from editorial_policy import normalize,FLUENCY
+    fluent=normalize(snapshot.get('editorial_policy'))==FLUENCY
+    current_times={}
+    if fluent:
+        for event in events:
+            record=_read_ref(folder,event['diagnostic'])
+            for item in record['request']['items']:current_times[item['id']]=event['finished_at_unix']
     journal = _journal(folder)
     positions = {event['id']: index for index, event in enumerate(journal['events'])}
     cutoff = max(positions[event['id']] for event in events)
@@ -518,6 +555,8 @@ def _historical_rejections(snapshot, events, folder):
         for sid, answer in answers.items():
             old, now = old_rows[sid], current.get(sid)
             if not now or answer['approved'] is True or old['source_binding'] != now['source_binding']:
+                continue
+            if fluent and event['finished_at_unix']<current_times.get(sid,float('-inf')):
                 continue
             from tagesschau_six_commit_20261105 import diagnostic_resolved as six_resolved
             if six_resolved(folder,sid,now['source_binding'],copy.deepcopy(event['diagnostic']),event['finished_at_unix']):
@@ -641,6 +680,12 @@ def _compile(snapshot, requests, events, folder):
                    'snapshot_sha256': _fp(snapshot), 'rows': findings,
                    'parent_report': {'path': REPORT, 'sha256': _fp(report)},
                    'diagnostics': refs, 'old_rejections_closed': False}
+    from editorial_policy import normalize,FLUENCY,fields
+    if normalize(snapshot.get('editorial_policy'))==FLUENCY:
+        for value in (report,recoverable):value.update(fields(FLUENCY),review_method='autonomous_proxy_fluency_review',
+            semantic_equivalence_required=False,source_facts_complete=False,approval_basis='actual_proxy_fluency_review_under_frozen_user_policy')
+        report['strict_semantic_review_passed']=False
+        recoverable['parent_report']['sha256']=_fp(report)
     return report, recoverable
 
 
@@ -696,11 +741,15 @@ def current_report(folder, rows):
 
 
 def _call(root, request, client_factory):
+    from editorial_policy import normalize,FLUENCY,assert_unheld,check_record,policy_for_folder
+    if normalize(request['identity'].get('editorial_policy'))==FLUENCY:
+        folder=Path(root)/'jobs'/request['identity']['job']
+        check_record(request['identity'],policy_for_folder(folder));assert_unheld(folder)
     client = client_factory(root)
     _require(_client_identity(client) == request['identity']['model_configuration'],
              '终审调用时Proxy模型配置已改变')
     before = len(getattr(client, 'records', []))
-    response = client.json(SYSTEM, request)
+    response = client.json(_system(request['identity'].get('editorial_policy')), request)
     records = copy.deepcopy(getattr(client, 'records', [])[before:])
     _require(len(records) == 1 and records[0].get('text_only') is True,
              '终审调用没有独立实际请求记录')
@@ -718,6 +767,9 @@ def ensure_review(root, folder, rows, *, progress=None, cancel=None, client_fact
     from proxy_client import ProxyClient
     root = Path(root).resolve()
     folder = Path(folder).resolve()
+    from editorial_policy import policy_for_folder,FLUENCY,assert_unheld
+    fluent=policy_for_folder(folder)==FLUENCY
+    if fluent:assert_unheld(folder)
     from review_model_policy import client_factory_for_job
     client_factory = client_factory_for_job(root,folder,client_factory or ProxyClient)
     rows = copy.deepcopy(rows)
@@ -769,6 +821,7 @@ def ensure_review(root, folder, rows, *, progress=None, cancel=None, client_fact
                     try:
                         response, records = future.result()
                         _response(response, requests[index])
+                        if fluent:assert_unheld(folder)
                         event['status'] = 'completed'
                     except Exception as error:
                         event['status'] = 'invalid_response' if response is not None else 'failed'
@@ -811,6 +864,7 @@ def ensure_review(root, folder, rows, *, progress=None, cancel=None, client_fact
         _require(_snapshot(root, folder, rows, identity) == snapshot, '整稿终审期间原片或输入已改变')
         # Final configuration is checked after all calls as well as per call.
         _require(_client_identity(client_factory(root)) == identity, '终审期间Proxy配置已改变')
+        if fluent:assert_unheld(folder)
         report, recoverable = _compile(snapshot, requests, chosen, folder)
         # Immutable snapshots preserve old complete decisions; the two current
         # pointers are independently reconstructible if interrupted between writes.

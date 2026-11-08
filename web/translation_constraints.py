@@ -9,6 +9,10 @@ import website_recovery as recovery
 def adoption_invariant_errors(folder, row, target, record, *, previous_context=''):
     """Preserve global guards; account only for an authenticated finite omission."""
     folder = Path(folder).resolve()
+    from editorial_policy import policy_for_folder,FLUENCY
+    if policy_for_folder(folder)==FLUENCY:
+        from proxy_client import invariants
+        return invariants(row['text_de'],target,editorial_policy=FLUENCY)
     if 'scoped_subset_ref' in record:
         from tagesschau_editorial_partial_20261104 import adoption_invariant_errors as partial
         return partial(folder.parent.parent, folder, row, target, record,
@@ -81,6 +85,8 @@ def validate_saved_translation_lock(row, hint, folder):
     if (not isinstance(supplied,dict) or not isinstance(supplied.get('items'),list)
             or not isinstance(response,dict) or not isinstance(response.get('translations'),list)):
         raise ValueError('既有审校输入或响应不完整')
+    from editorial_policy import check_record,policy_for_folder
+    check_record(supplied,policy_for_folder(folder))
     sid=row['segment_id'];binding=source_binding(row);source_text=row.get('text_source',row.get('text_de'))
     inputs=[item for item in supplied['items'] if isinstance(item,dict) and item.get('id')==sid]
     outputs=[item for item in response['translations'] if isinstance(item,dict) and item.get('id')==sid]

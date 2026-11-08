@@ -445,6 +445,11 @@ def _guard_context(rows, index):
 
 def _run(root, jid, action, ids=None, reason=None, policy=None, client_factory=None):
     root, folder = _folder(root, jid)
+    from editorial_policy import policy_for_folder,fields,FLUENCY,FLUENCY_GUIDANCE
+    editorial_policy=policy_for_folder(folder);fluent=editorial_policy==FLUENCY
+    if fluent:
+        from editorial_policy import assert_unheld
+        assert_unheld(folder)
     policy = _policy(root, jid, policy)
     if not policy['enabled']:
         raise RecoveryReviewRequired('网站恢复已关闭')
@@ -514,8 +519,18 @@ def _run(root, jid, action, ids=None, reason=None, policy=None, client_factory=N
                     'source_revision_plan': (revision or {}).get('revised_plan_sha256'),
                     'code': {name: _sha(root/'web'/name) if (root/'web'/name).is_file() else None
                              for name in ('website_recovery.py', 'proxy_client.py', 'numeric_calendar_context.py', 'source_language.py')}}
+        identity.update(fields(editorial_policy))
         fingerprint = _hash(identity)
         previous = [e for e in journal['events'] if e['action'] == action and e['input_fingerprint'] == fingerprint]
+        if fluent:
+            # Scope/source items are the input budget; code/mode cannot reset it.
+            previous=[]
+            for prior in journal['events']:
+                if prior.get('action')!=action or prior.get('segment_ids')!=list(ids):continue
+                request_path=_safe(folder,'recovery/website/'+prior['id']+'/request.json')
+                if not request_path.exists():previous.append(prior);continue
+                old=_read(request_path)
+                if old.get('items')==items:previous.append(prior)
         for event in reversed(previous):
             if event['status'] == 'succeeded' and _success_current(folder, event):
                 return {'status': 'reused', 'action': action, 'affected_count': len(ids), 'event_id': event['id']}
@@ -551,23 +566,27 @@ def _run(root, jid, action, ids=None, reason=None, policy=None, client_factory=N
                     '时间、否定、条件、消息来源、引语归属和不确定性；上下文只用于理解，不重复译入当前行。'
                     '不删除条目、不改变时间人物。source_word_uncertain=true的原词尚未核实；用户允许根据上下文保守宽泛意译，'
                     '不得补造具体词义，也不能声称原词已经确认。')
+            if fluent:base=FLUENCY_GUIDANCE
             editor = (base + ('为source疑词行给出保守、自然的完整中文。' if action == 'source' else
-                '为指定声学或时长异常行精简现有中文，必须比current_chinese短；删冗余措辞，不能删事实或比较关系。') +
+                ('为指定声学或时长异常行自然精简现有中文，必须更短；允许自主删减意译。' if fluent else '为指定声学或时长异常行精简现有中文，必须比current_chinese短；删冗余措辞，不能删事实或比较关系。')) +
                 '只返回 {"translations":[{"id":"原id","text_zh":"中文"}]}，每个id恰好一次。')
             event.update(status='editing', proxy_calls=1)
             _publish(folder, journal)
             draft_raw = client.json(editor, payload)
             _save(evidence_dir/'editor.json', draft_raw)
+            if fluent:assert_unheld(folder)
             draft = _response(draft_raw, ids)
             review_payload = {**payload, 'draft': draft}
             audit = (base + '你是独立第二遍审校员。逐条重新对照源文、原中文及上下文；检查完整事实和所有限定，'
                 '可以纠正文案。精简动作仍须更短。不能批准新增事实或依靠猜原词得出的具体含义。'
                 '仅在可修正为忠实保守表述时approved=true且issues=[]；否则false并列出问题。'
                 '只返回 {"translations":[{"id":"原id","text_zh":"校正后中文","approved":true,"issues":[]}]}。')
+            if fluent:audit=(FLUENCY_GUIDANCE+'你是独立第二遍中文流畅性审校员，可纠正文案；精简动作仍须更短。只返回 {\"translations\":[{\"id\":\"原id\",\"text_zh\":\"校正后中文\",\"approved\":true,\"issues\":[]}]}。')
             event.update(status='reviewing', proxy_calls=2)
             _publish(folder, journal)
             audit_raw = client.json(audit, review_payload)
             _save(evidence_dir/'audit.json', audit_raw)
+            if fluent:assert_unheld(folder)
             final = _response(audit_raw, ids, audit=True)
             from proxy_client import invariants
             checks = {}
@@ -575,11 +594,11 @@ def _run(root, jid, action, ids=None, reason=None, policy=None, client_factory=N
                 sid = item['id']
                 target = final[sid]
                 errors = invariants(item['text_source'], target,
-                    previous_context=_guard_context(rows, indexes[sid]), source_language=item['source_language'])
+                    previous_context=_guard_context(rows, indexes[sid]), source_language=item['source_language'],editorial_policy=editorial_policy)
                 old_exact = item['current_chinese']
                 requirements = hints['rows'].get(sid, {}).get('required_strings', [])
                 prior_wording = old_exact is not None and ''.join(requirements) == old_exact
-                for required in requirements:
+                for required in ([] if fluent else requirements):
                     if not prior_wording and required != old_exact and required not in target:
                         errors.append('已确认文字约束未保留')
                 if action == 'compact' and len(re.sub(r'\s', '', target)) >= len(re.sub(r'\s', '', old_exact)):
@@ -596,7 +615,7 @@ def _run(root, jid, action, ids=None, reason=None, policy=None, client_factory=N
                 uncertainty = ('原文疑词仍未逐字核实，按上下文保守表达；' if item['source_word_uncertain']
                                else '保留原文，不将本次文字审校作为源音频再次核实；')
                 note = ('本网站恢复动作经Proxy编辑和独立机器二审；' + uncertainty +
-                        '不增加事实；数字、时间、单位、否定、条件、归属与不确定性保持。建议完整中文：' + wording)
+                        ('按用户流畅优先目标接受，允许意义偏差；未核事实完整。建议完整中文：' if fluent else '不增加事实；数字、时间、单位、否定、条件、归属与不确定性保持。建议完整中文：') + wording)
                 hints['rows'][sid] = {'source_text_sha256': hashlib.sha256(item['text_source'].encode()).hexdigest(),
                     'note': note, 'required_strings': [wording[n:n+80] for n in range(0, len(wording), 80)]}
             hints['website_recovery'] = {'schema': 'website_recovery_hints_receipt_v1', 'event_id': event_id,

@@ -1,6 +1,6 @@
 # Workflow recovery and queue status
 
-The controller preserves source bindings, factual checks and lifetime recovery budgets. A saved model approval remains subject to current local checks and later source-bound refusals.
+The controller preserves source bindings and lifetime recovery budgets. Factual checks apply to strict jobs; explicitly frozen fluency jobs use independent fluency review and preserve their policy identity. A saved model approval remains subject to current local checks and later source-bound refusals.
 
 ## Local guard failures
 
@@ -21,6 +21,10 @@ Historical notification records remain available. Current pending decisions deri
 The tick has no executor for submissions, retries, model calls, service restarts or mail. Such operations continue through the existing authorized controller and connector paths. A plan is data and does not grant permission. Unknown submission or mail outcomes require reconciliation before another attempt.
 
 Local observation uses the liveness and job GET endpoints. The health endpoint can probe the configured text provider and is not used for routine queue observation.
+
+## Authorized daily submission
+
+`web/tagesschau_daily_start.py` is a separate, explicitly authorized executor for the current due broadcast date. It runs after observation/reconciliation, uses the existing service queue and preserves older holds. Resume only continues the latest due date's existing intent; an uncertain POST outcome is reconciled against the unique local job before any new submission. The tick itself remains observational. Scheduling and account connections are configured locally; see [the daily runbook](tagesschau_daily_automation.md).
 
 ## Verification scope
 

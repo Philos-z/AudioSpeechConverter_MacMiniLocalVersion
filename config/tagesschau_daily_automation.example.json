@@ -2,7 +2,7 @@
   "schema": "tagesschau_daily_automation_config_v1",
   "root": ".",
   "timezone": "Europe/Berlin",
-  "daily_local_time": "20:30",
+  "daily_local_time": "21:00",
   "listing_url": "https://www.tagesschau.de/multimedia",
   "selection": "latest_regular_tagesschau_by_official_broadcast_time",
   "quality_label": "SD 270p",
@@ -24,5 +24,13 @@
     "attachment": false,
     "save_to_sent_items": true
   },
-  "new_job_reserve_gib": 8
+  "new_job_reserve_gib": 8,
+  "daily_submission_policy": "current_date_independent_v1",
+  "late_resume_policy": "latest_due_intent_only",
+  "old_holds_block_new_dates": false,
+  "daily_current_date_authorization_ref": {
+    "path": "",
+    "sha256": ""
+  },
+  "source_language": "de"
 }

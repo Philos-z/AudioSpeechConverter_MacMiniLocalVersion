@@ -1,7 +1,7 @@
 {
   "schema": "source_only_locked_release_v1",
-  "date": "2026-11-06",
-  "origin_deployment": "source_only_workflow_optimization_20261106",
+  "date": "2026-11-08",
+  "origin_deployment": "source_only_first_unattended_20261108",
   "production_profile": "hybrid-gpt-preserve-25-pad-eager",
   "cfm_steps": 25,
   "seed": 42,
@@ -35,7 +35,11 @@
     "Synchronized generic whole-script semantic review, layered full-speech verification, complete-source acquisition, speaker-reference boundaries and bounded supervised service takeover.",
     "Historical task-specific continuations, editorial decisions and voice selections are public fail-closed adapters with no private registrations; unsupported present credentials are refused and ordinary manifest paths pass through unchanged.",
     "Retained source-only allowlist, submodule pins and existing portable validators; source-derived news-case tests remain local and public fixtures are synthetic.",
-    "Share strict legacy/current recovery request identities and validate saved auxiliary evidence; stop fully bound local guard failures before new evidence-first text reservations. Add a GET-only deterministic daily queue projection with generation-plus-SHA compare-and-swap and no business-action executor."
+    "Share strict legacy/current recovery request identities and validate saved auxiliary evidence; stop fully bound local guard failures before new evidence-first text reservations. Add a GET-only deterministic daily queue projection with generation-plus-SHA compare-and-swap and no business-action executor.",
+    "Freeze explicit per-job fluency-first editorial standards, independent review identity and evidence-backed voice uncertainty decisions; legacy strict jobs, explicit holds, source bindings and lifetime budgets remain unchanged.",
+    "Add authorized current-date daily submission and latest-due-intent resume at 21:00 Europe/Berlin, preserving serial production and unknown-POST reconciliation; schedulers, account connectors and all real local authorizations remain outside source.",
+    "Record the first user-unattended production completion as a redacted milestone, distinguishing machine verification from human listening and pre-submission scheduling repair.",
+    "Use shared pause and pending-decision guards before and after full PCM verification; independent adversarial checks reject risk receipts while any current wait remains effective."
   ],
   "excluded": [
     "actual Proxy service/configuration/credentials/endpoints",
@@ -43,7 +47,7 @@
     "task state/receipts/reports except model identity lock",
     "model weights/cache/virtual environments/bundled binaries"
   ],
-  "validation_scope": "842 source regression methods passed in the prepared macOS environment, including 25 new recovery evidence cases and 33 new daily tick cases. Independent local acceptance additionally covers 16 adversarial workflow boundaries and privacy of all eight changed/new source files. Python AST, JavaScript syntax and whitespace checks pass. Public fixtures are synthetic; no models or production jobs are run by these tests. Public code retains private fail-closed adapters and excludes concurrent task-specific news rules. Tests do not establish fresh-machine setup, all-source unattended completion, full-video performance or human listening acceptance.",
+  "validation_scope": "900 source regression tests passed in the prepared macOS environment. New synthetic tests cover frozen editorial policy, strict compatibility, complete-PCM voice evidence, holds and cancellation, persistent budgets, current-date submission, midnight/DST, unknown POST outcomes and queue projections. Public fixtures are synthetic; no speech models or production jobs run in these tests. Pinned submodules and the formal25/seed42 profile remain unchanged. The separately documented first user-unattended run is one source/environment result, not a fresh-machine deployment, all-source success-rate, human listening or strict semantic acceptance claim.",
   "files": [
     {
       "path": ".gitattributes",
@@ -62,13 +66,13 @@
     },
     {
       "path": "AGENTS.md",
-      "bytes": 1591,
-      "sha256": "144b72909a390e244124ae635a266f2b91d362bf95a02bc48dad4a15546d4dd8"
+      "bytes": 2034,
+      "sha256": "1e30377fa85c71a6ce0a09c8ea37e084159d46a3f90fd40fe34b0e97a28f11a4"
     },
     {
       "path": "README.md",
-      "bytes": 7518,
-      "sha256": "2be79d8081286a69b357011292e013878870f0ef5745263914c706a252692e9f"
+      "bytes": 8805,
+      "sha256": "5f5db3636533c516ffc15c125388189f05fba35537c771c91b661547f1935bc3"
     },
     {
       "path": "THIRD_PARTY_NOTICES.md",
@@ -106,6 +110,11 @@
       "sha256": "fd304bb7668937dc907c78c497e35a406d5382f07dd8241a976abf674a4c7192"
     },
     {
+      "path": "config/editorial_policy.example.json",
+      "bytes": 247,
+      "sha256": "b67196047015837a581a54f69e9988d1e9b6e7eadb415d766ff13c504b3ddf15"
+    },
+    {
       "path": "config/local.example.json",
       "bytes": 604,
       "sha256": "d9c0bb6d33226a5fe210a70fd8582f90538cc553c1d3434ce62db3a5f0a6e525"
@@ -127,8 +136,8 @@
     },
     {
       "path": "config/tagesschau_daily_automation.example.json",
-      "bytes": 811,
-      "sha256": "a9174b74cdd57b6e5aea479be11bf4f44ba84ed3670b12b44050a1273e562d99"
+      "bytes": 1068,
+      "sha256": "d44465bfbff73b5a8f7f43d6155dcc989c5fa1a9097754c983418741d3d5340f"
     },
     {
       "path": "config/web_proxy.example.json",
@@ -139,6 +148,16 @@
       "path": "docs/DEPLOYMENT.md",
       "bytes": 3063,
       "sha256": "78dea29da68a18a9c6d5e2481af9a305eee3055a56c8383c83e185ce402d75a1"
+    },
+    {
+      "path": "docs/EDITORIAL_POLICY.md",
+      "bytes": 2456,
+      "sha256": "085030302c3e8aa5c7fc04bae6512a13bdac37ebe86bc4c3a267e855a175cb1e"
+    },
+    {
+      "path": "docs/FIRST_UNATTENDED_RUN.md",
+      "bytes": 1989,
+      "sha256": "a7bbffce482063ad1b256802d4189c6a09c9454c0f002c04f20db8249437d74f"
     },
     {
       "path": "docs/LOCAL_DATA.md",
@@ -157,13 +176,18 @@
     },
     {
       "path": "docs/WEBSITE_RECOVERY.md",
-      "bytes": 6401,
-      "sha256": "74f71f713a0851729dcc048d6886532c70d54128f5daa7fefc7bac64312b58e5"
+      "bytes": 7078,
+      "sha256": "6e5817d9ed73b7c3a66255503757c0bdc05993e3b5b70aff456e1373456103fb"
     },
     {
       "path": "docs/WORKFLOW_RELIABILITY.md",
-      "bytes": 3077,
-      "sha256": "63c096d2f04177e873fe1efb090058b5edb8bd63edb84596dc90d55dab747082"
+      "bytes": 3756,
+      "sha256": "3c9fccc805325c05eb48848d009bba31c728f6f53e19d7db2d8ae9f7c7faf749"
+    },
+    {
+      "path": "docs/tagesschau_daily_automation.md",
+      "bytes": 8145,
+      "sha256": "af0c29ae401196fb37508fd23e6afb211689aec7d1d8d82a1c1bccb38a5696b7"
     },
     {
       "path": "reports/models.lock.json",
@@ -491,6 +515,11 @@
       "sha256": "07418538beae65850b31727df6d55ea8aa01a4df35680a6ec68a602a563a3f8c"
     },
     {
+      "path": "tests/test_editorial_policy.py",
+      "bytes": 6567,
+      "sha256": "355ceebbe5b75ec95054a2b831e364edf77a082eaeb35c54d2a7d75a698ecce4"
+    },
+    {
       "path": "tests/test_encoded_master_pipeline.py",
       "bytes": 4818,
       "sha256": "ebb56e228f4d47fc8e8ca9d8a6bb6f11cf5f7331fc42235a0904428e9b3a2dca"
@@ -524,6 +553,16 @@
       "path": "tests/test_failure_triage_local_translation.py",
       "bytes": 9175,
       "sha256": "3b70071c574fe4f7fab5460e563777e58c1114334c56000f514c50589b91d116"
+    },
+    {
+      "path": "tests/test_fluency_integration.py",
+      "bytes": 12550,
+      "sha256": "9d79f810b465d65458c1b6889ce62ab3d30aba332c46092180d7871ba1bbfe8e"
+    },
+    {
+      "path": "tests/test_fluency_voice_resolution.py",
+      "bytes": 8069,
+      "sha256": "3200f7f3261513df8464a56c02ff47c955dd15f6c3c612bc09ab3ae2d772ff8d"
     },
     {
       "path": "tests/test_independent_numeric_v12_adversarial.py",
@@ -572,8 +611,8 @@
     },
     {
       "path": "tests/test_preview_review_hints.py",
-      "bytes": 2856,
-      "sha256": "7c10e2ddf77f82a5a2571a3e06c9b43e3dbc99ff92691e8506fbcc013d9a151b"
+      "bytes": 2861,
+      "sha256": "83d46228e3311af060043c76390698c4fc7a6fb9d17f902308c4adf01e3d3254"
     },
     {
       "path": "tests/test_proxy_backoff_integration.py",
@@ -706,6 +745,21 @@
       "sha256": "0acd04943f01ceb050f2dd3d95d2971b75cb2a96de7c81a2ef5cb4a791e8cbee"
     },
     {
+      "path": "tests/test_tagesschau_daily_start.py",
+      "bytes": 10731,
+      "sha256": "6ea3a4c6d71a6a1e3addb1714bf6b1122e8cc1600ee99310833a1d62ef277672"
+    },
+    {
+      "path": "tests/test_tagesschau_daily_start_boundaries.py",
+      "bytes": 20596,
+      "sha256": "8fb466a40631ca57c7fd610a62ce390f0bd6f8d862cf539e72efeb11eabf1406"
+    },
+    {
+      "path": "tests/test_tagesschau_daily_start_projection.py",
+      "bytes": 7183,
+      "sha256": "b0f2f415baa84b898775352dd52372f3f38d433316ca985a37317a6cd0cccdb0"
+    },
+    {
       "path": "tests/test_tagesschau_daily_tick.py",
       "bytes": 29647,
       "sha256": "7f32814b9faf69c66cdce646022d6623e9d11476abe4948c682245a2899ee985"
@@ -792,8 +846,8 @@
     },
     {
       "path": "web/autonomous_content_review.py",
-      "bytes": 50778,
-      "sha256": "e2705a8e6b756fbc538188102dd33d82d947709d51fc5fc5e69952e4cfa1f278"
+      "bytes": 54452,
+      "sha256": "1938388292360f0c4a7ff6f48a6c002e28a03900bba1c9922dc95c558df1db73"
     },
     {
       "path": "web/bounded_adjudication.py",
@@ -821,6 +875,11 @@
       "sha256": "ce3592d7eb6d52d4f4833f1a89dbd9cfa71c4fe84c7556519fecc795d44937bf"
     },
     {
+      "path": "web/editorial_policy.py",
+      "bytes": 10374,
+      "sha256": "71c2c3dd44b9e471ef2b350e1fd7f0c0d811e08d9966a5975ec60bd0311b8953"
+    },
+    {
       "path": "web/encoded_master_recovery.py",
       "bytes": 29528,
       "sha256": "8bbbe1cfc9920ad5e84c3dc83e398815919ee751df93d5ba71c59d70d050ed9c"
@@ -844,6 +903,11 @@
       "path": "web/failure_triage.py",
       "bytes": 45198,
       "sha256": "8668e23bc5f11630ac72a0f28dbc8d8a0ec769d8c90c467cca1fc2e83c59c99e"
+    },
+    {
+      "path": "web/fluency_voice_resolution.py",
+      "bytes": 13023,
+      "sha256": "ea0bff2589ff86a29572e75b8623d309830b6d8c1f7c43e9204ebc3002b08359"
     },
     {
       "path": "web/generic_group_alignment.py",
@@ -902,8 +966,8 @@
     },
     {
       "path": "web/pipeline.py",
-      "bytes": 150553,
-      "sha256": "e68095c9107f013ff5babcb16df144a674d825efb09b170298495cc2f80d227c"
+      "bytes": 154749,
+      "sha256": "14b71f35440f8a6a8947427e831fdcab4250ea2444fa7760e20fbc6ba320df94"
     },
     {
       "path": "web/portable_private_hooks.py",
@@ -912,8 +976,8 @@
     },
     {
       "path": "web/proxy_client.py",
-      "bytes": 123365,
-      "sha256": "c476461e23d8175822bae3852b4639ff1ae1ae00f046959118c1ba4e3fbbbfd1"
+      "bytes": 126697,
+      "sha256": "dfe0845c734ba1a65eabe3889fa40b0dbaf5a649099beddb6988984a9b493ca9"
     },
     {
       "path": "web/recovery.py",
@@ -942,8 +1006,8 @@
     },
     {
       "path": "web/server.py",
-      "bytes": 64325,
-      "sha256": "3f32b99dea0adc72f87911d407cf59c79b39b0ec93b415cf5f76b1f8b8571ef3"
+      "bytes": 64650,
+      "sha256": "16a4f99b6d0f47b95aa7ffe0633db7461ea36a598cca542f70c791b2f03fdc0b"
     },
     {
       "path": "web/service.py",
@@ -1021,9 +1085,14 @@
       "sha256": "472dfcb41f69c9305af9fb49a8e0bd966a8b277167b06f6c88cd08d824bbd797"
     },
     {
+      "path": "web/tagesschau_daily_start.py",
+      "bytes": 29236,
+      "sha256": "25158f45e235698ed8ffaf8e0a18e71e67a1783559b1453c0ccac529a646e1d5"
+    },
+    {
       "path": "web/tagesschau_daily_state.py",
-      "bytes": 34935,
-      "sha256": "aedd903f4ee37be0b689915a3f1da027d784aa30be01cebb847eac1d3ff7fd89"
+      "bytes": 36821,
+      "sha256": "bc50798109b660a2550e7411795816bb53c42246e2a4bbc82be71a821fc372c7"
     },
     {
       "path": "web/tagesschau_daily_tick.py",
@@ -1087,18 +1156,18 @@
     },
     {
       "path": "web/translation_constraints.py",
-      "bytes": 8194,
-      "sha256": "3d9b11a6fd63d1f2d30d76fa9115e37db23aa980d49ed3d723124900d72352a8"
+      "bytes": 8531,
+      "sha256": "77ca11e6306f58adbf56ef4e99bae27205511248930581412aaf64dd4aaca816"
     },
     {
       "path": "web/translation_recovery.py",
-      "bytes": 95559,
-      "sha256": "a99857fe357b22f37e05cc2ed8f6e1e5abaa84f1d06cca41bf5840e3d1b1f0d6"
+      "bytes": 99731,
+      "sha256": "c1f48761c25cc1f6aacd33dab4885d9a43283583f29742f3329515ff6ad0b00d"
     },
     {
       "path": "web/translation_reuse.py",
-      "bytes": 10790,
-      "sha256": "f6cdc661a44ce7310ea20e340842fb7130efb75c9e395cf097ca6cb288d1eb9d"
+      "bytes": 10999,
+      "sha256": "609af954400c0f8f3689e53b24b4835d498cee00521f495cb82008bfec3af4af"
     },
     {
       "path": "web/user_context_adoption.py",
@@ -1147,8 +1216,8 @@
     },
     {
       "path": "web/website_recovery.py",
-      "bytes": 37808,
-      "sha256": "4c776d614e4fdc954c754d0a41832a5e78f9e612d42e6c6ac259ff493ced0808"
+      "bytes": 39341,
+      "sha256": "d2c46e8b8568ed53bffc5da372c2bd871ce03104364a789bc4fa19eb34db88d9"
     },
     {
       "path": "web/website_review.py",
@@ -1161,7 +1230,7 @@
       "sha256": "7d78ba82c3b72a97fd0da84a89f95981777f91d496f7226d99fc14eade7efcdd"
     }
   ],
-  "release_revision": "Current generic controller baseline with bounded takeover, source acquisition, full-script review, complete speech checks and private-scope publication boundaries",
+  "release_revision": "First production completed without mid-run user intervention; generic frozen fluency policy and current-date autonomous daily start",
   "baseline_tag": "locked-2026-10-21",
   "source_language_policy": "automatic_detection_and_proxy_two_pass",
   "episode_max_seconds": 1800,
@@ -1183,9 +1252,9 @@
     ],
     "opacity": 0.55
   },
-  "release_id": "workflow-reliability-2026-11-06",
+  "release_id": "first-unattended-2026-11-08",
   "previous_release_tag": "philos-club-serif-2026-10-21",
-  "current_release_tag": null,
+  "current_release_tag": "first-unattended-2026-11-08",
   "website_recovery": {
     "source_mode_default": "contextual",
     "source_uncertainty_retained": true,
@@ -1214,5 +1283,41 @@
     "old_delivery_versions_preserved": true,
     "low_dynamic_asr_threshold_db": 12,
     "singleton_complete_sentence_max_s": 24
+  },
+  "editorial_policy": {
+    "supported": [
+      "strict_v1",
+      "fluency_first_v1"
+    ],
+    "unconfigured_source_default": "strict_v1",
+    "fluency_requires_local_authorization": true,
+    "frozen_per_job": true,
+    "legacy_missing_field": "strict_v1",
+    "meaning_deviation_allowed_only_in_fluency": true,
+    "human_listening_inferred": false,
+    "budgets_reset": false
+  },
+  "daily_production": {
+    "timezone": "Europe/Berlin",
+    "daily_local_time": "21:00",
+    "entrypoint": "web/tagesschau_daily_start.py",
+    "resume_policy": "latest_due_intent_only",
+    "old_holds_block_new_dates": false,
+    "unknown_post_blind_retry": false,
+    "external_scheduler_bundled": false,
+    "mail_connector_bundled": false,
+    "requires_local_authorization": true
+  },
+  "first_user_unattended_completion": {
+    "programme_date": "2026-11-07",
+    "completed_at_berlin": "2026-11-08T00:54:55+01:00",
+    "duration_s": 837.0,
+    "video_bytes": 47788168,
+    "groups": 161,
+    "source_ids": 298,
+    "all_stage_triggering_unattended_claimed": false,
+    "human_listening_claimed": false,
+    "strict_semantic_approval_claimed": false,
+    "documentation": "docs/FIRST_UNATTENDED_RUN.md"
   }
 }
